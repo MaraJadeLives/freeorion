@@ -224,7 +224,7 @@ INTERCEPTOR
 Interceptor
 
 DEFAULT_EMPIRE_NAME
-Terran Imperium
+Star Kingdom of Manticore
 
 DEFAULT_PLAYER_NAME
 Human_Player
