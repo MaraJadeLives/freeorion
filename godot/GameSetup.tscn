@@ -355,7 +355,7 @@ margin_left = 177.0
 margin_right = 345.0
 margin_bottom = 25.0
 size_flags_horizontal = 3
-text = "Terran Imperium"
+text = "Star Kingdom of Manticore"
 placeholder_text = "0"
 
 [node name="EmpireColor" type="HBoxContainer" parent="ToplevelContainer/LeftContainer" index="12"]
@@ -382,7 +382,7 @@ margin_left = 177.0
 margin_right = 345.0
 margin_bottom = 25.0
 size_flags_horizontal = 3
-text = "Terran Imperium"
+text = "Star Kingdom of Manticore"
 color = Color( 0.223529, 0.294118, 0.87451, 1 )
 edit_alpha = false
 
