@@ -21,8 +21,8 @@ struct PreviewInformation;
  */
 class SaveFileDialog : public CUIWnd {
 public:
-    enum class Purpose {Save, Load};
-    enum class SaveType {SinglePlayer, MultiPlayer};
+    enum class Purpose : bool {Save, Load};
+    enum class SaveType : bool {SinglePlayer, MultiPlayer};
 
     SaveFileDialog(const Purpose purpose = Purpose::Load, const SaveType type = SaveType::SinglePlayer);
 
@@ -37,7 +37,8 @@ public:
     void SetPreviewList(PreviewInformation&& preview_info);
 
     /// Get the chosen save files full path
-    std::string Result() const;
+    [[nodiscard]] boost::filesystem::path ResultPath() const;
+    [[nodiscard]] std::string ResultString() const;
 
 protected:
     GG::Rect CalculatePosition() const override;
@@ -47,7 +48,7 @@ private:
 
     void Confirm();                         //!< when m_save_btn button is pressed
     void AskDelete();                       //!< when a file is trying to be deleted
-    void DoubleClickRow(GG::ListBox::iterator row, const GG::Pt& pt, const GG::Flags<GG::ModKey>& mod);
+    void DoubleClickRow(GG::ListBox::iterator row, GG::Pt pt, GG::Flags<GG::ModKey> mod);
     void Cancel();                          //!< when m_load_btn button is pressed
     void SelectionChanged(const GG::ListBox::SelectionSet& files);  //!< When file selection changes.
     void UpdateDirectory(std::string newdir);                       //!< Change current directory

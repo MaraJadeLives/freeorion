@@ -19,7 +19,7 @@
 #include <vector>
 
 
-enum class LogLevel : char;
+enum class LogLevel : uint8_t;
 class EmpireManager;
 class SupplyManager;
 class SpeciesManager;
@@ -107,6 +107,7 @@ public:
         ((TURN_TIMEOUT))           ///< sent by server to client to notify about remaining time before turn advance
         ((PLAYER_INFO))            ///< sent by server to client to notify about changes in the player data
         ((AUTO_TURN))              ///< sent by client to server to move into auto-turn state
+        ((REVERT_ORDERS))          ///< send by client to server to discard any previously-sent orders this turn and to re-send the turn update message
     )
 
     FO_ENUM(
@@ -138,17 +139,21 @@ public:
     )
 
     Message() = default;
-    Message(MessageType message_type, std::string text);
+    Message(MessageType type, std::string text) noexcept :
+        m_type(type),
+        m_message_size(text.size()),
+        m_message_text(std::move(text))
+    {}
 
-    MessageType        Type() const noexcept;      ///< Returns the type of the message.
-    std::size_t        Size() const noexcept;      ///< Returns the size of the underlying buffer.
-    const char*        Data() const noexcept;      ///< Returns the underlying buffer.
-    const std::string& Text() const;               ///< Returns the underlying buffer as a std::string.
+    [[nodiscard]] MessageType Type() const noexcept { return m_type; };
+    [[nodiscard]] std::size_t Size() const noexcept { return m_message_size; }
+    [[nodiscard]] auto&       Text() const noexcept { return m_message_text; }
+    [[nodiscard]] auto        Data() const noexcept { return m_message_text.data(); }
+    [[nodiscard]] auto        Data() noexcept       { return m_message_text.data(); }
 
-    void               Resize(std::size_t size);   ///< Resizes the underlying char buffer to \a size uninitialized bytes.
-    char*              Data() noexcept;            ///< Returns the underlying buffer.
-    void               Swap(Message& rhs) noexcept;///< Swaps the contents of \a *this with \a rhs.  Does not throw.
-    void               Reset() noexcept;           ///< Reverts message to same state as after default constructor
+    void Resize(std::size_t size);   ///< Resizes the underlying char buffer to \a size uninitialized bytes.
+    void Swap(Message& rhs) noexcept;
+    void Reset() noexcept;           ///< Reverts message to same state as after default constructor
 
 private:
     MessageType                 m_type = MessageType::UNDEFINED;
@@ -164,10 +169,10 @@ FO_COMMON_API void BufferToHeader(const Message::HeaderBuffer& buffer, Message& 
 /** Fills \a header_buf from the relevant portions of \a message. */
 FO_COMMON_API void HeaderToBuffer(const Message& message, Message::HeaderBuffer& buffer);
 
-bool operator==(const Message& lhs, const Message& rhs);
-bool operator!=(const Message& lhs, const Message& rhs);
+// ignores m_message_size
+[[nodiscard]] FO_COMMON_API bool operator==(const Message& lhs, const Message& rhs) noexcept;
 
-FO_COMMON_API void swap(Message& lhs, Message& rhs); ///< Swaps the contents of \a lhs and \a rhs.  Does not throw.
+FO_COMMON_API void swap(Message& lhs, Message& rhs) noexcept;
 
 
 ////////////////////////////////////////////////
@@ -183,8 +188,10 @@ FO_COMMON_API std::ostream& operator<<(std::ostream& os, const Message& msg);
 ////////////////////////////////////////////////
 
 /** creates an ERROR_MSG message*/
-FO_COMMON_API Message ErrorMessage(const std::string& problem, bool fatal = true,
+FO_COMMON_API Message ErrorMessage(const std::string& problem_stringtable_key, bool fatal = true,
                                    int player_id = Networking::INVALID_PLAYER_ID);
+FO_COMMON_API Message ErrorMessage(const std::string& problem_stringtable_key, const std::string& unlocalized_info,
+                                   bool fatal = true, int player_id = Networking::INVALID_PLAYER_ID);
 
 /** creates a HOST_SP_GAME message*/
 FO_COMMON_API Message HostSPGameMessage(const SinglePlayerSetupData& setup_data, const std::map<std::string, std::string>& dependencies);
@@ -218,7 +225,7 @@ FO_COMMON_API Message GameStartMessage(
     const EmpireManager& empires, const Universe& universe,
     const SpeciesManager& species, CombatLogManager& combat_logs,
     const SupplyManager& supply, const std::map<int, PlayerInfo>& players,
-    const OrderSet& orders, const SaveGameUIData* ui_data,
+    const OrderSet& orders, const SaveGameUIData& ui_data,
     GalaxySetupData galaxy_setup_data, bool use_binary_serialization,
     bool use_compression);
 
@@ -321,7 +328,7 @@ FO_COMMON_API Message DispatchCombatLogsMessage(const std::vector<std::pair<int,
                                                 bool use_binary_serialization, bool use_compression);
 
 /** Sends logger configuration details to server or ai process. */
-FO_COMMON_API Message LoggerConfigMessage(int sender, const std::set<std::tuple<std::string, std::string, LogLevel>>& options);
+FO_COMMON_API Message LoggerConfigMessage(int sender, const std::vector<std::tuple<std::string, std::string, LogLevel>>& options);
 
 ////////////////////////////////////////////////
 // Multiplayer Lobby Message named ctors
@@ -354,7 +361,7 @@ FO_COMMON_API Message ServerPlayerChatMessage(int sender, const boost::posix_tim
 FO_COMMON_API Message StartMPGameMessage();
 
 /** creates a CHECKSUM message containing checksums of parsed content. */
-FO_COMMON_API Message ContentCheckSumMessage();
+FO_COMMON_API Message ContentCheckSumMessage(const SpeciesManager& species);
 
 /** creates a AUTH_REQUEST message containing \a player_name to login and \a auth additional authentication data. */
 FO_COMMON_API Message AuthRequestMessage(const std::string& player_name, const std::string& auth);
@@ -363,7 +370,7 @@ FO_COMMON_API Message AuthRequestMessage(const std::string& player_name, const s
 FO_COMMON_API Message AuthResponseMessage(const std::string& player_name, const std::string& auth);
 
 /** notifies client about changes in his authorization \a roles. */
-FO_COMMON_API Message SetAuthorizationRolesMessage(const Networking::AuthRoles& roles);
+FO_COMMON_API Message SetAuthorizationRolesMessage(Networking::AuthRoles roles);
 
 /** creates a ELIMINATE_SELF message to resign from the game. */
 FO_COMMON_API Message EliminateSelfMessage();
@@ -378,11 +385,16 @@ FO_COMMON_API Message PlayerInfoMessage(const std::map<int, PlayerInfo>& players
  *  inifinity turns if -1 or set empire to playing state if 0. */
 FO_COMMON_API Message AutoTurnMessage(int turns_count);
 
+/** create a REVERT_ORDERS message to ask the server to discard any received orders this turn,
+  * and to re-send the turn update message for this turn. */
+FO_COMMON_API Message RevertOrdersMessage();
+
 ////////////////////////////////////////////////
 // Message data extractors
 ////////////////////////////////////////////////
 
-FO_COMMON_API void ExtractErrorMessageData(const Message& msg, int& player_id, std::string& problem, bool& fatal);
+FO_COMMON_API void ExtractErrorMessageData(const Message& msg, int& player_id, std::string& problem_key,
+                                           std::string& unlocalized_info, bool& fatal);
 
 FO_COMMON_API void ExtractHostMPGameMessageData(const Message& msg, std::string& host_player_name,
                                                 std::string& client_version_string, std::map<std::string, std::string>& dependencies);
@@ -466,7 +478,7 @@ FO_COMMON_API void ExtractRequestCombatLogsMessageData(const Message& msg, std::
 
 FO_COMMON_API void ExtractDispatchCombatLogsMessageData(const Message& msg, std::vector<std::pair<int, CombatLog>>& logs);
 
-FO_COMMON_API void ExtractLoggerConfigMessageData(const Message& msg, std::set<std::tuple<std::string, std::string, LogLevel>>& options);
+FO_COMMON_API std::vector<std::tuple<std::string, std::string, LogLevel>> ExtractLoggerConfigMessageData(const Message& msg);
 
 FO_COMMON_API void ExtractContentCheckSumMessageData(const Message& msg, std::map<std::string, unsigned int>& checksums);
 

@@ -1,31 +1,21 @@
 import freeOrionAIInterface as fo
+from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from logging import debug, error
 from typing import (
-    Dict,
-    Iterable,
-    List,
-    Mapping,
     NamedTuple,
     Optional,
-    Sequence,
-    Set,
-    Tuple,
     Union,
 )
 
-import AIDependencies
 from AIDependencies import INVALID_ID, STABILITY_PER_LIKED_FOCUS
 from aistate_interface import get_aistate
 from common.fo_typing import PlanetId, SpeciesName, SystemId
 from empire.colony_builders import get_colony_builders, get_extra_colony_builders
 from empire.ship_builders import get_ship_builders
-from freeorion_tools import get_named_real, ppstring
+from EnumsAI import FocusType
+from freeorion_tools import get_game_rule_int, get_named_real, ppstring
 from freeorion_tools.caching import cache_for_current_turn
-
-
-def safe_name(univ_object):
-    return (univ_object and univ_object.name) or "?"
 
 
 def sys_name_ids(sys_ids: Iterable[int]) -> str:
@@ -55,7 +45,7 @@ def planet_string(planet_ids: Union[PlanetId, Iterable[PlanetId]]) -> str:
 
 
 @cache_for_current_turn
-def get_capital() -> PlanetId:
+def get_capital() -> PlanetId:  # noqa: C901
     """
     Return current empire capital id.
 
@@ -108,7 +98,7 @@ def get_capital_sys_id() -> SystemId:
         return fo.getUniverse().getPlanet(cap_id).systemID
 
 
-def get_planets_in__systems_ids(system_ids: Iterable[SystemId]) -> List[PlanetId]:
+def get_planets_in__systems_ids(system_ids: Iterable[SystemId]) -> list[PlanetId]:
     """
     Return list of planet ids for system ids list.
     """
@@ -122,7 +112,7 @@ def get_planets_in__systems_ids(system_ids: Iterable[SystemId]) -> List[PlanetId
 
 
 @cache_for_current_turn
-def get_owned_planets_by_empire() -> List[PlanetId]:
+def get_owned_planets_by_empire() -> list[PlanetId]:
     """
     Return list of all planets owned by empire.
     """
@@ -171,7 +161,7 @@ def get_populated_planet_ids(planet_ids: Sequence[PlanetId]) -> Sequence[PlanetI
 
 
 @cache_for_current_turn
-def get_empire_populated_planets() -> Tuple[fo.planet]:
+def get_empire_populated_planets() -> tuple[fo.planet]:
     universe = fo.getUniverse()
     return tuple(universe.getPlanet(pid) for pid in get_populated_planet_ids(get_owned_planets_by_empire()))
 
@@ -186,9 +176,9 @@ def get_systems(planet_ids: Sequence[PlanetId]) -> Sequence[SystemId]:
 
 
 class Opinion(NamedTuple):
-    likes: Set[PlanetId]
-    neutral: Set[PlanetId]
-    dislikes: Set[PlanetId]
+    likes: set[PlanetId]
+    neutral: set[PlanetId]
+    dislikes: set[PlanetId]
 
     def value(self, pid: PlanetId, like_value: float, neutral_value: float, dislike_value: float) -> float:
         """Returns like_value if pid is in likes, dislike_value if pid is in dislikes, else neutral_value"""
@@ -261,7 +251,7 @@ def _planet_species(pid: PlanetId) -> Optional[fo.species]:
 
 
 @cache_for_current_turn
-def _calculate_get_planet_opinions() -> Dict[str, Opinion]:
+def _calculate_get_planet_opinions() -> dict[str, Opinion]:
     universe = fo.getUniverse()
     all_species = [universe.getPlanet(pid).speciesName for pid in get_owned_planets_by_empire()]
     all_species += get_extra_colony_builders()
@@ -290,10 +280,12 @@ def _calculate_get_planet_opinions() -> Dict[str, Opinion]:
 
 def dislike_factor() -> float:
     """Returns multiplier for dislike effects."""
-    # See happiness.macros
+    # See opinion.macros
     has_liberty = fo.getEmpire().policyAdopted("PLC_LIBERTY")
-    # conformance not used yet
-    return get_named_real("PLC_LIBERTY_DISLIKE_FACTOR") if has_liberty else 1.0
+    has_conformance = fo.getEmpire().policyAdopted("PLC_CONFORMANCE")
+    liberty_factor = get_named_real("PLC_LIBERTY_DISLIKE_FACTOR") if has_liberty else 1.0
+    conformance_factor = get_named_real("PLC_CONFORMANCE_DISLIKE_FACTOR") if has_conformance else 1.0
+    return liberty_factor * conformance_factor
 
 
 def focus_stability_effect(species: fo.species, focus: str) -> float:
@@ -303,12 +295,14 @@ def focus_stability_effect(species: fo.species, focus: str) -> float:
         result += STABILITY_PER_LIKED_FOCUS
     if focus in species.dislikes:
         result += STABILITY_PER_LIKED_FOCUS * dislike_factor()
+    if focus == FocusType.FOCUS_PROTECTION:
+        result += get_game_rule_int("RULE_PROTECTION_FOCUS_STABILITY", 15)
     empire = fo.getEmpire()
     # TODO move policy definitions to AIDependency? Or used an EnumClass like BuildingType?
-    if focus == AIDependencies.Tags.INDUSTRY and empire.policyAdopted("PLC_INDUSTRIALISM"):
-        result += fo.getNamedValue("PLC_INDUSTRIALISM_TARGET_HAPPINESS_FLAT")
-    if focus == AIDependencies.Tags.INDUSTRY and empire.policyAdopted("PLC_TECHNOCRACY"):
-        result += fo.getNamedValue("PLC_TECHNOCRACY_TARGET_HAPPINESS_FLAT")
+    if focus == FocusType.FOCUS_INDUSTRY and empire.policyAdopted("PLC_INDUSTRIALISM"):
+        result += get_named_real("PLC_INDUSTRIALISM_TARGET_HAPPINESS_FLAT")
+    if focus == FocusType.FOCUS_RESEARCH and empire.policyAdopted("PLC_TECHNOCRACY"):
+        result += get_named_real("PLC_TECHNOCRACY_TARGET_HAPPINESS_FLAT")
     return result
 
 
@@ -324,3 +318,20 @@ def stability_with_focus(planet: fo.planet, focus: str) -> float:
         # returning a big negative value here should stop it from considering that focus for anything.
         return -99.0
     return stability - focus_stability_effect(species, planet.focus) + focus_stability_effect(species, focus)
+
+
+def adjust_liberty(planet: fo.planet, population: float) -> float:
+    """
+    Adjust liberty research output for changed stability.
+    UpdateMeterEstimate calculates liberty based on current stability, not on target stability.
+    So this may return a positive or negative adjustment, depending on whether stability goes up or down.
+    """
+    # This one is relatively easy to calculate. Still it would be better to have an adjustMeterUpdate with
+    # modified stability...
+    current_stability = planet.currentMeterValue(fo.meterType.happiness)
+    target_stability = planet.currentMeterValue(fo.meterType.targetHappiness)
+    low = get_named_real("PLC_LIBERTY_MIN_STABILITY")
+    high = get_named_real("PLC_LIBERTY_MAX_STABILITY")
+    difference = max(low, min(high, target_stability)) - max(low, min(high, current_stability))
+    debug(f"adjust_liberty on {planet}: difference={difference}, population={population}")
+    return difference * population * get_named_real("PLC_LIBERTY_RESEARCH_BONUS_SCALING")

@@ -17,13 +17,13 @@
 
 
 #include <climits>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <map>
 #include <sstream>
 #include <string>
-#include <boost/algorithm/string/trim.hpp>
-
+#include <limits>
 
 namespace GG {
 
@@ -36,7 +36,7 @@ public:
     constexpr explicit EnumMap(const char* comma_separated_names)
     { Build(comma_separated_names); }
 
-    [[nodiscard]] constexpr std::string_view operator[](EnumType value) const
+    [[nodiscard]] constexpr std::string_view operator[](EnumType value) const noexcept
     {
         std::size_t idx = 0;
         for (; idx < m_size; ++idx)
@@ -50,10 +50,14 @@ public:
         return "None";
     }
 
-    [[nodiscard]] constexpr EnumType operator[](std::string_view name) const
+    [[nodiscard]] constexpr EnumType operator[](std::string_view name) const noexcept
+    { return FromString(name); }
+
+    [[nodiscard]] constexpr EnumType FromString(std::string_view name,
+                                                EnumType not_found_result = EnumType(0)) const noexcept
     {
         std::size_t idx = 0;
-        for (; idx < m_size; ++idx)
+        for (; idx < m_size; ++idx) // TODO: use constexpr std::find once C++20 is available
         {
             if (m_names[idx] == name)
             {
@@ -61,12 +65,12 @@ public:
                 return *value_it;
             }
         }
-        return std::numeric_limits<EnumType>::max();
+        return not_found_result;
     }
 
-    [[nodiscard]] constexpr std::size_t size() const { return m_size; }
+    [[nodiscard]] constexpr auto size() const noexcept { return m_size; }
 
-    [[nodiscard]] constexpr bool empty() const { return m_size == 0; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return m_size == 0; }
 
 private:
     constexpr void Build(const char* comma_separated_names)
@@ -74,7 +78,7 @@ private:
         if (Count(comma_separated_names, ',') > CAPACITY)
             throw std::invalid_argument("too many comma separated enum vals to build map");
         auto count_names = SplitApply(comma_separated_names, Trim, ',');
-        for (size_t i = 0; i < count_names.first; ++i)
+        for (std::size_t i = 0; i < count_names.first; ++i)
             Insert(count_names.second[i]);
     }
 
@@ -82,20 +86,21 @@ private:
     // and inserts into this map
     constexpr void Insert(std::string_view entry)
     {
-        auto count_trimmed_name_value_str = SplitApply<2>(entry, Trim, '=');
-        static_assert(std::is_same_v<decltype(count_trimmed_name_value_str.first), std::size_t>);
-        static_assert(std::is_same_v<decltype(count_trimmed_name_value_str.second),
-                                     std::array<std::string_view, 2>>);
+        const auto [parts_count, trimmed_strs] = SplitApply<2>(entry, Trim, '='); // separate into parts before and after =
+        static_assert(std::is_same_v<decltype(parts_count), const std::size_t>);
+        static_assert(std::is_same_v<decltype(trimmed_strs), const std::array<std::string_view, 2>>);
 
-        auto count = count_trimmed_name_value_str.first;
-        if (count < 2)
-            return;
-        auto [name, value_str] = count_trimmed_name_value_str.second;
+        const auto name = trimmed_strs[0];
 
-        EnumType value = ToEnumType(value_str);
-        //std::cout << "inserting entry: " << entry << "  as name: " << name
-        //          << "  value string: " << value_str
-        //          << "  value: " << static_cast<int>(value) << std::endl;
+        const auto value = [had_value_specified{parts_count >= 2}, value_str{trimmed_strs[1]}, this]() {
+            if (had_value_specified)
+                return EnumType(ToInt(value_str));
+
+            // increment last-specified value or default to 0 for the first
+            using value_num_t = std::underlying_type_t<EnumType>;
+            const value_num_t next_value_num = (m_size == 0u) ? 0 : (static_cast<value_num_t>(m_values[m_size-1]) + 1);
+            return EnumType(next_value_num);
+        }();
 
         const auto place_idx = m_size++;
         if (m_size >= CAPACITY)
@@ -105,9 +110,9 @@ private:
         m_values[place_idx] = value;
     }
 
-    static constexpr std::size_t CAPACITY = std::numeric_limits<unsigned char>::max();
+    static constexpr std::size_t CAPACITY = std::numeric_limits<uint8_t>::max();
 
-
+public:
     [[nodiscard]] static constexpr std::pair<std::string_view, std::string_view> Split(
         std::string_view delim_separated_vals, const char delim)
     {
@@ -117,31 +122,33 @@ private:
         return {delim_separated_vals.substr(0, comma_idx),
             delim_separated_vals.substr(comma_idx + 1)};
     }
+private:
 
     static constexpr std::string_view test_cs_names = "123 = 7  , next_thing =   124, last thing  =-1";
     static constexpr auto first_and_rest = Split(test_cs_names, ',');
     static constexpr auto second_and_rest = Split(first_and_rest.second, ',');
     static constexpr auto third_and_rest = Split(second_and_rest.second, ',');
     static constexpr auto fourth_and_rest = Split(third_and_rest.second, ',');
+    static_assert(first_and_rest.first == "123 = 7  ");
     static_assert(fourth_and_rest.first.empty());
     static constexpr std::string_view third_result_expected = " last thing  =-1";
     static_assert(third_and_rest.first == third_result_expected);
 
 
     // how many times does \a delim appear in text?
-    [[nodiscard]] static constexpr std::size_t Count(std::string_view text, const char delim)
+    [[nodiscard]] static constexpr auto Count(std::string_view text, const char delim)
     {
         std::size_t retval = 1;
-        for (size_t i = 0; i < text.length(); ++i)
+        for (std::size_t i = 0; i < text.length(); ++i)
             retval += text[i] == delim;
         return retval;
     }
     static constexpr auto comma_count = Count(test_cs_names, ',');
     static_assert(comma_count == 3);
 
-
-    template <size_t RETVAL_CAP = CAPACITY, typename F>
-    [[nodiscard]] static constexpr std::pair<size_t, std::array<std::string_view, RETVAL_CAP>>
+public:
+    template <std::size_t RETVAL_CAP = CAPACITY, typename F>
+    [[nodiscard]] static constexpr std::pair<std::size_t, std::array<std::string_view, RETVAL_CAP>>
         SplitApply(std::string_view comma_separated_names, F&& fn, char delim)
     {
         std::size_t count = 0;
@@ -156,7 +163,6 @@ private:
         return {count, retval};
     }
 
-
     [[nodiscard]] static constexpr std::string_view Trim(std::string_view padded)
     {
         constexpr std::string_view whitespace = " \b\f\n\r\t\v";
@@ -164,6 +170,7 @@ private:
         auto end_idx = padded.find_last_not_of(whitespace);
         return padded.substr(start_idx, end_idx - start_idx + 1);
     }
+private:
     static constexpr std::string_view test_text = " \n\f  something = \t 0x42\b\t  ";
     static constexpr std::string_view trimmed_text_expected = "something = \t 0x42";
     static_assert(Trim(test_text) == trimmed_text_expected);
@@ -236,7 +243,7 @@ private:
         bool is_hex = base == 16;
 
         int retval = 0;
-        for (auto c : txt.substr(is_negative + 2*is_hex)) {
+        for (auto c : txt.substr(static_cast<size_t>((is_negative ? 1u : 0u) + 2u*is_hex))) {
             retval *= base;
             std::size_t digit = valid_chars.find(c);
             retval += static_cast<int>(digit);
@@ -249,10 +256,7 @@ private:
     static_assert(ToInt("0") == 0);
     static_assert(ToInt("0xa0") == 160);
     static_assert(ToInt("0x5d") == 93);
-
-
-    [[nodiscard]] static constexpr EnumType ToEnumType(std::string_view str)
-    { return EnumType(ToInt(str)); }
+    static_assert(ToInt(std::string_view{}) == 0);
 
 
     std::size_t                            m_size = 0;
@@ -270,7 +274,7 @@ private:
         __VA_ARGS__                                                                     \
     };                                                                                  \
                                                                                         \
-    static inline const EnumMap<EnumName>& GetEnumMap()                                 \
+    static inline const EnumMap<EnumName>& GetEnumMap() noexcept                        \
     {                                                                                   \
         constexpr EnumMap<EnumName> cmap(#__VA_ARGS__);                                 \
         static const auto& map{cmap};                                                   \
@@ -289,14 +293,14 @@ private:
 
 
 template <typename EnumType>
-constexpr EnumMap<EnumType> CGetEnumMap()
+constexpr EnumMap<EnumType> CGetEnumMap() noexcept
 {
     constexpr EnumMap<EnumType> cmap("");
     return cmap;
 }
 
 template <typename EnumType>
-inline const EnumMap<EnumType>& GetEnumMap()
+inline const EnumMap<EnumType>& GetEnumMap() noexcept
 {
     static const auto& map{CGetEnumMap<EnumType>()};
     return map;
@@ -312,14 +316,14 @@ inline const EnumMap<EnumType>& GetEnumMap()
     };                                                                                  \
                                                                                         \
     template <>                                                                         \
-    constexpr EnumMap<EnumName> CGetEnumMap()                                           \
+    constexpr EnumMap<EnumName> CGetEnumMap() noexcept                                  \
     {                                                                                   \
         constexpr EnumMap<EnumName> cmap(#__VA_ARGS__);                                 \
         return cmap;                                                                    \
     }                                                                                   \
                                                                                         \
     template <>                                                                         \
-    inline const EnumMap<EnumName>& GetEnumMap()                                        \
+    inline const EnumMap<EnumName>& GetEnumMap() noexcept                               \
     {                                                                                   \
         static const auto& map{CGetEnumMap<EnumName>()};                                \
         return map;                                                                     \
@@ -335,9 +339,12 @@ inline const EnumMap<EnumType>& GetEnumMap()
     inline std::ostream& operator<<(std::ostream& os, EnumName value)                   \
     { return os << GetEnumMap<EnumName>()[value]; }                                     \
                                                                                         \
-    [[nodiscard]] constexpr inline std::string_view to_string(EnumName value)           \
-    { return CGetEnumMap<EnumName>()[value]; }
-
+    [[nodiscard]] constexpr std::string_view to_string(EnumName value) noexcept         \
+    { return CGetEnumMap<EnumName>()[value]; }                                          \
+                                                                                        \
+    [[nodiscard]] constexpr EnumName EnumName##FromString(                              \
+        std::string_view sv, EnumName result_not_found = EnumName(0)) noexcept          \
+    { return CGetEnumMap<EnumName>().FromString(sv, result_not_found); }
 }
 
 

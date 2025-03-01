@@ -23,8 +23,7 @@ namespace FreeOrionPython {
             return static_cast<unsigned int>(self.size());  // ignore warning http://lists.boost.org/Archives/boost/2007/04/120377.php
         }
         static bool         empty(const Set& self) { return self.empty(); }
-        static bool         contains(const Set& self, const Key& item) { return self.count(item); }
-        static unsigned int count(const Set& self, const Key& item) { return self.count(item); }
+        static bool         contains(const Set& self, const Key& item) { return self.contains(item); }
         static SetIterator  begin(const Set& self) { return self.begin(); }
         static SetIterator  end(const Set& self) { return self.end(); }
 
@@ -33,10 +32,8 @@ namespace FreeOrionPython {
 
             py::class_<Set>(python_name.c_str(), py::no_init)
                 .def("__len__",         &size)
-                .def("size",            &size)
                 .def("empty",           &empty)
                 .def("__contains__",    &contains)
-                .def("count",           &count)
                 .def("__iter__",        py::iterator<Set>())
             ;
         }

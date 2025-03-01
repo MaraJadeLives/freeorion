@@ -16,29 +16,50 @@
 #define _GG_Flags_h_
 
 
+#include <algorithm>
 #include <cassert>
 #include <iosfwd>
 #include <array>
 #include <limits>
+#include <string_view>
 #include <type_traits>
 #include <GG/Exception.h>
-
+#if __has_include(<bit>)
+#  if defined(_MSC_VER) && defined(_MSVC_LANG) && _MSVC_LANG < 202002L
+    // do nothing
+#  else
+#    include <bit>
+#  endif
+#endif
+#include <climits>
 
 namespace GG {
-
 namespace detail {
     template <typename T, std::enable_if_t<std::is_integral_v<T>>* = nullptr>
-    constexpr inline std::size_t OneBits(T num)
+    constexpr std::size_t OneBits(T num) noexcept
     {
-        std::size_t retval = 0;
-        constexpr std::size_t NUM_BITS = std::numeric_limits<T>::digits;
-        for (std::size_t i = 0; i < NUM_BITS; ++i) {
-            if (num & 1)
-                ++retval;
-            num >>= 1;
+#if defined(__cpp_lib_bitops)
+        if constexpr (std::is_unsigned_v<T>) {
+            return std::popcount(num);
+        } else {
+#endif
+            std::size_t retval = 0;
+            constexpr std::size_t NUM_BITS = sizeof(T)*CHAR_BIT;
+            for (std::size_t i = 0; i < NUM_BITS; ++i) {
+                if (num & 1)
+                    ++retval;
+                num >>= 1;
+            }
+            return retval;
+#if defined(__cpp_lib_bitops)
         }
-        return retval;
+#endif
     }
+    static_assert(OneBits(0x0) == 0);
+    static_assert(OneBits(8u) == 1);
+    static_assert(OneBits(1) == 1);
+    static_assert(OneBits(std::numeric_limits<uint16_t>::max()) == 16);
+    static_assert(OneBits(std::numeric_limits<int8_t>::min()) == 1);
 }
 
 
@@ -65,7 +86,7 @@ inline constexpr bool is_flag_type_v = is_flag_type<T>::value;
     class GG_API name                                                   \
     {                                                                   \
     public:                                                             \
-        using InternalType = unsigned short int;                        \
+        using InternalType = uint16_t;                                  \
         constexpr name() noexcept = default;                            \
         constexpr explicit name(InternalType value) :                   \
             m_value(value)                                              \
@@ -74,12 +95,9 @@ inline constexpr bool is_flag_type_v = is_flag_type<T>::value;
                 throw std::invalid_argument(                            \
                     "Non-bitflag passed to " #name " constructor");     \
         }                                                               \
-        constexpr bool operator==(name rhs) const                       \
-        { return m_value == rhs.m_value; }                              \
-        constexpr bool operator!=(name rhs) const                       \
-        { return m_value != rhs.m_value; }                              \
-        constexpr bool operator<(name rhs) const                        \
-        { return m_value < rhs.m_value; }                               \
+        [[nodiscard]] constexpr bool operator==(const name& rhs) const noexcept \
+        { return m_value == rhs.m_value; };                             \
+                                                                        \
     private:                                                            \
         InternalType m_value = 0;                                       \
         friend class Flags<name>;                                       \
@@ -100,17 +118,43 @@ inline constexpr bool is_flag_type_v = is_flag_type<T>::value;
         is >> str;                                                      \
         n = FlagSpec<name>::instance().FromString(str);                 \
         return is;                                                      \
-    }
+    }                                                                   \
+                                                                        \
+    GG_API std::string to_string(Flags<name> flags);
 
 
 /** Defines the implementation of FlagSpec::instance() for the flag type \a
     name. */
-#define GG_FLAGSPEC_IMPL(name)                          \
-    template <>                                         \
-    FlagSpec<name>& FlagSpec<name>::instance()          \
-    {                                                   \
-        static FlagSpec retval;                         \
-        return retval;                                  \
+#define GG_FLAGSPEC_IMPL(name)                                  \
+    template <>                                                 \
+    FlagSpec<name>& FlagSpec<name>::instance()                  \
+    {                                                           \
+        static FlagSpec retval;                                 \
+        return retval;                                          \
+    }                                                           \
+                                                                \
+    std::string to_string(Flags<name> flags)                    \
+    {                                                           \
+        using InternalType = name::InternalType;                \
+        InternalType flags_data{flags};                         \
+        static constexpr std::size_t FLAG_BITS =                \
+            sizeof(flags_data) * CHAR_BIT;                      \
+        static constexpr InternalType one_mask{0x1};            \
+        std::string retval;                                     \
+        retval.reserve(sizeof(flags_data) * 10);                \
+                                                                \
+        const auto& flag_spec{FlagSpec<name>::instance()};      \
+        bool flag_printed = false;                              \
+        for (std::size_t i = 0; i < FLAG_BITS; ++i) {           \
+            if (flags_data & one_mask) {                        \
+                if (flag_printed)                               \
+                    retval.append(" | ");                       \
+                retval.append(flag_spec.ToString(name(1 << i)));\
+                flag_printed = true;                            \
+            }                                                   \
+            flags_data >>= 1;                                   \
+        }                                                       \
+        return retval;                                          \
     }
 
 
@@ -134,16 +178,17 @@ inline constexpr bool is_flag_type_v = is_flag_type<T>::value;
 template <typename FlagType>
 class GG_API FlagSpec
 {
-    static constexpr std::size_t digits = std::numeric_limits<typename FlagType::InternalType>::digits;
-    using FlagContainerT = std::array<FlagType, digits>;
-
-public:
     // If you have received an error message directing you to the line below,
     // it means you probably have tried to use this class with a FlagsType
     // that is not a type generated by GG_FLAG_TYPE.  Use that to generate new
     // flag types.
     static_assert(is_flag_type_v<FlagType>, "Using FlagsType without GG_FLAG_TYPE macro");
+    static_assert(std::is_unsigned_v<typename FlagType::InternalType>);
+    static constexpr std::size_t digits = std::numeric_limits<typename FlagType::InternalType>::digits;
+    static_assert(digits > 0);
+    using FlagContainerT = std::array<FlagType, digits>;
 
+public:
     /** Const iterator over all known flags. */
     using const_iterator = typename FlagContainerT::const_iterator;
 
@@ -160,63 +205,70 @@ public:
     [[nodiscard]] static FlagSpec& instance();
 
     /** Returns true iff FlagSpec contains \a flag. */
-    [[nodiscard]] constexpr bool contains(FlagType flag) const
-    {
-        for (size_t idx = 0; idx < m_count; ++idx)
-            if (m_flags.at(idx) == flag)
-                return true;
-        return false;
-    }
+    [[nodiscard]] constexpr bool contains(FlagType flag) const noexcept { return find(flag) != end(); }
 
     /** Returns an iterator to \a flag, if flag is in the FlagSpec, or end()
-        otherwise. */
-    [[nodiscard]] constexpr const_iterator find(FlagType flag) const
+      * otherwise. */
+    [[nodiscard]] constexpr const_iterator find(FlagType flag) const noexcept
     {
-        for (const_iterator it = begin(); it != end(); ++it)
+        for (const_iterator it = m_flags.cbegin(); it != m_flags.cend(); ++it)
             if (*it == flag)
                 return it;
-        return end();
+        return m_flags.cend();
     }
     /** Returns an iterator to the first flag in the FlagSpec. */
-    [[nodiscard]] constexpr const_iterator begin() const
-    { return m_flags.begin(); }
+    [[nodiscard]] constexpr const_iterator begin() const noexcept { return m_flags.cbegin(); }
     /** Returns an iterator to one past the last flag in the FlagSpec. */
-    [[nodiscard]] constexpr const_iterator end() const
-    { return m_flags.begin() + m_count; }
+    [[nodiscard]] constexpr const_iterator end() const noexcept { return m_flags.cbegin() + m_count; }
+
     /** Returns the stringification of \a flag provided when \a flag was added
-        to the FlagSpec.  \throw Throws GG::FlagSpec::UnknownFlag if an
-        unknown flag's stringification is requested. */
+      * to the FlagSpec.  \throw Throws GG::FlagSpec::UnknownFlag if an
+      * unknown flag's stringification is requested. */
     [[nodiscard]] constexpr std::string_view ToString(FlagType flag) const
     {
-        for (size_t idx = 0; idx < m_count; ++idx)
-            if (m_flags.at(idx) == flag)
-                return m_strings.at(idx);
-        throw UnknownFlag("Could not find string corresponding to unknown flag");
+        const auto it = find(flag);
+        if (it == end())
+            throw UnknownFlag("Could not find string corresponding to unknown flag");
+        return m_strings[std::distance(begin(), it)];
+    }
+    [[nodiscard]] constexpr std::string_view ToString(FlagType flag, std::string_view not_found_value) const
+    {
+        for (std::size_t idx = 0; idx < m_count; ++idx)
+            if (m_flags[idx] == flag)
+                return m_strings[idx];
+        return not_found_value;
     }
     /** Returns the flag whose stringification is \a str.  \throw Throws
-        GG::FlagSpec::UnknownString if an unknown string is provided. */
+      * GG::FlagSpec::UnknownString if an unknown string is provided. */
     [[nodiscard]] constexpr FlagType FromString(std::string_view str) const
     {
-        for (size_t idx = 0; idx < m_count; ++idx)
-            if (m_strings.at(idx) == str)
-                return m_flags.at(idx);
-        throw UnknownString("Could not find flag corresponding to unknown string");
+        const auto begin_it = m_strings.cbegin();
+        const auto end_it = begin_it + m_count;
+        const auto found_it = std::find(begin_it, end_it, str);
+        if (found_it == end_it)
+            throw UnknownString("Could not find flag corresponding to unknown string");
+        return m_flags[std::distance(begin_it, found_it)];
+    }
+    [[nodiscard]] constexpr FlagType FromString(std::string_view str, FlagType not_found_value) const noexcept
+    {
+        for (std::size_t idx = 0; idx < m_count; ++idx)
+            if (m_strings[idx] == str)
+                return m_flags[idx];
+        return not_found_value;
     }
 
-    /** Adds \a flag, with stringification string \a name, to the FlagSpec.
-        If \a permanent is true, this flag becomes non-removable.  Alls flags
-        added by GG are added as permanent flags.  User-added flags should not
-        be added as permanent. */
-    template<typename S>
-    constexpr void insert(FlagType flag, S&& name)
+    /** Adds \a flag, with stringification string \a name, to the FlagSpec. */
+    void insert(FlagType flag, std::string_view name)
     {
         if (m_count >= digits)
             throw std::runtime_error("FlagSpec had too many flags inserted");
-        for (size_t idx = 0; idx < m_count; ++idx)
-            if (m_flags.at(idx) == flag)
-                throw std::invalid_argument("FlagSpec duplicate flag inserted");
+        const auto begin_it = m_flags.cbegin();
+        const auto end_it = begin_it + m_count;
+        if (std::any_of(begin_it, end_it, [flag](FlagType f) { return f == flag; }))
+            throw std::invalid_argument("FlagSpec duplicate flag inserted");
+
         m_flags[m_count] = flag;
-        m_strings[m_count] = std::forward<S>(name);
+        m_strings[m_count] = name;
         m_count++;
     }
 
@@ -229,28 +281,20 @@ private:
 };
 
 
-template <typename FlagType>
-class Flags;
-
-template <typename FlagType>
-std::ostream& operator<<(std::ostream& os, Flags<FlagType> flags);
-
 /** \brief A set of flags of the same type.
-
-    Individual flags and sets of flags can be passed as parameters and/or be
-    stored as member variables in Flags objects. */
+  * Individual flags and sets of flags can be passed as parameters and/or be
+  * stored as member variables in Flags objects. */
 template <typename FlagType>
 class Flags
 {
-private:
-    struct ConvertibleToBoolDummy {int _;};
-
 public:
     // If you have received an error message directing you to the line below,
     // it means you probably have tried to use this class with a FlagsType
     // that is not a type generated by GG_FLAG_TYPE.  Use that to generate new
     // flag types.
     static_assert(is_flag_type_v<FlagType>, "Using Flags without GG_FLAG_TYPE macro");
+
+    using InternalType = typename FlagType::InternalType;
 
     /** The base class for Flags exceptions. */
     GG_ABSTRACT_EXCEPTION(Exception);
@@ -261,12 +305,12 @@ public:
     constexpr Flags() = default;
 
     /** Ctor.  Note that this ctor allows implicit conversions from FlagType
-        to Flags.  \throw Throws GG::Flags::UnknownFlag if \a flag is not
-        found in FlagSpec<FlagType>::instance(). */
+      * to Flags.  \throw Throws GG::Flags::UnknownFlag if \a flag is not
+      * found in FlagSpec<FlagType>::instance(). */
     constexpr Flags(FlagType flag) :
         m_flags(flag.m_value)
     {
-#if defined(__cpp_lib_is_constant_evaluated)
+#if defined(__cpp_lib_is_constant_evaluated) && (!defined(__clang_major__) || (__clang_major__ >= 14))
         if (!std::is_constant_evaluated()) {
             if (!FlagSpec<FlagType>::instance().contains(flag))
                 throw UnknownFlag("Invalid flag with value " + std::to_string(flag.m_value));
@@ -275,162 +319,114 @@ public:
     }
 
     /** Conversion to bool, so that a Flags object can be used as a boolean
-        test.  It is convertible to true when it contains one or more flags,
-        and convertible to false otherwise. */
-    constexpr operator int ConvertibleToBoolDummy::* () const
-    { return m_flags ? &ConvertibleToBoolDummy::_ : 0; }
-    /** Returns true iff *this contains the same flags as \a rhs. */
-    constexpr bool operator==(Flags<FlagType> rhs) const
-    { return m_flags == rhs.m_flags; }
-    /** Returns true iff *this does not contain the same flags as \a rhs. */
-    constexpr bool operator!=(Flags<FlagType> rhs) const
-    { return m_flags != rhs.m_flags; }
-    /** Returns true iff the underlying storage of *this is less than the
-        underlying storage of \a rhs.  Note that this is here for use in
-        associative containers only; it is otherwise meaningless. */
-    constexpr bool operator<(Flags<FlagType> rhs) const
-    { return m_flags < rhs.m_flags; }
+      * test. Converts to true when it contains one or more flags and converts
+      * to false otherwise. */
+    [[nodiscard]] constexpr operator bool() const noexcept { return m_flags; }
 
-    /** Performs a bitwise-or of *this and \a rhs, placing the result in *this. */
-    constexpr Flags<FlagType>& operator|=(Flags<FlagType> rhs)
+#if defined(__cpp_impl_three_way_comparison)
+    [[nodiscard]] constexpr auto operator<=>(const Flags<FlagType>&) const noexcept = default;
+#else
+    [[nodiscard]] constexpr bool operator==(const Flags<FlagType>& rhs) const noexcept
+    { return m_flags == rhs.m_flags; };
+    [[nodiscard]] constexpr bool operator!=(const Flags<FlagType>& rhs) const noexcept
+    { return m_flags != rhs.m_flags; };
+#endif
+
+    constexpr auto& operator|=(Flags<FlagType> rhs) noexcept
     {
         m_flags |= rhs.m_flags;
         return *this;
     }
-    /** Performs a bitwise-and of *this and \a rhs, placing the result in *this. */
-    constexpr Flags<FlagType>& operator&=(Flags<FlagType> rhs)
+    constexpr auto& operator&=(Flags<FlagType> rhs) noexcept
     {
         m_flags &= rhs.m_flags;
         return *this;
     }
-    /** Performs a bitwise-xor of *this and \a rhs, placing the result in *this. */
-    constexpr Flags<FlagType>& operator^=(Flags<FlagType> rhs)
+    constexpr auto& operator^=(Flags<FlagType> rhs) noexcept
     {
         m_flags ^= rhs.m_flags;
         return *this;
     }
 
-private:
-    using InternalType = typename FlagType::InternalType;
-    InternalType m_flags = 0;
+    [[nodiscard]] constexpr operator InternalType() const noexcept { return m_flags; }
 
-    friend std::ostream& operator<<<>(std::ostream& os, Flags<FlagType> flags);
+private:
+    InternalType m_flags = 0;
 };
 
 /** Writes \a flags to \a os in the format "flag1 | flag2 | ... flagn". */
 template <typename FlagType>
 std::ostream& operator<<(std::ostream& os, Flags<FlagType> flags)
 {
-    unsigned int flags_data = flags.m_flags;
-    bool flag_printed = false;
-    for (std::size_t i = 0; i < sizeof(flags_data) * 8; ++i) {
-        if (flags_data & 1) {
-            if (flag_printed)
-                os << " | ";
-            os << FlagSpec<FlagType>::instance().ToString(FlagType(1 << i));
-            flag_printed = true;
-        }
-        flags_data >>= 1;
-    }
+    os << to_string(flags);
     return os;
 }
 
-/** Returns a Flags object that consists of the bitwise-or of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator|(Flags<FlagType> lhs, Flags<FlagType> rhs)
+constexpr auto operator|(Flags<FlagType> lhs, Flags<FlagType> rhs)
 {
     Flags<FlagType> retval(lhs);
     retval |= rhs;
     return retval;
 }
 
-/** Returns a Flags object that consists of the bitwise-or of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator|(Flags<FlagType> lhs, FlagType rhs)
+constexpr auto operator|(Flags<FlagType> lhs, FlagType rhs)
 { return lhs | Flags<FlagType>(rhs); }
 
-/** Returns a Flags object that consists of the bitwise-or of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator|(FlagType lhs, Flags<FlagType> rhs)
+constexpr auto operator|(FlagType lhs, Flags<FlagType> rhs)
 { return Flags<FlagType>(lhs) | rhs; }
 
-/** Returns a Flags object that consists of the bitwise-or of \a lhs and \a
-    rhs. */
-template <typename FlagType>
-constexpr
-typename std::enable_if_t<is_flag_type_v<FlagType>, Flags<FlagType>>
-operator|(FlagType lhs, FlagType rhs)
+template <typename FlagType, std::enable_if_t<is_flag_type_v<FlagType>>* = nullptr>
+constexpr auto operator|(FlagType lhs, FlagType rhs)
 { return Flags<FlagType>(lhs) | Flags<FlagType>(rhs); }
 
-/** Returns a Flags object that consists of the bitwise-and of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator&(Flags<FlagType> lhs, Flags<FlagType> rhs)
+constexpr auto operator&(Flags<FlagType> lhs, Flags<FlagType> rhs)
 {
     Flags<FlagType> retval(lhs);
     retval &= rhs;
     return retval;
 }
 
-/** Returns a Flags object that consists of the bitwise-and of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator&(Flags<FlagType> lhs, FlagType rhs)
+constexpr auto operator&(Flags<FlagType> lhs, FlagType rhs)
 { return lhs & Flags<FlagType>(rhs); }
 
-/** Returns a Flags object that consists of the bitwise-and of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator&(FlagType lhs, Flags<FlagType> rhs)
+constexpr auto operator&(FlagType lhs, Flags<FlagType> rhs)
 { return Flags<FlagType>(lhs) & rhs; }
 
-/** Returns a Flags object that consists of the bitwise-and of \a lhs and \a
-    rhs. */
-template <typename FlagType>
-constexpr
-typename std::enable_if_t<is_flag_type_v<FlagType>, Flags<FlagType>>
-operator&(FlagType lhs, FlagType rhs)
+template <typename FlagType, std::enable_if_t<is_flag_type_v<FlagType>>* = nullptr>
+constexpr auto operator&(FlagType lhs, FlagType rhs)
 { return Flags<FlagType>(lhs) & Flags<FlagType>(rhs); }
 
-/** Returns a Flags object that consists of the bitwise-xor of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator^(Flags<FlagType> lhs, Flags<FlagType> rhs)
+constexpr auto operator^(Flags<FlagType> lhs, Flags<FlagType> rhs)
 {
     Flags<FlagType> retval(lhs);
     retval ^= rhs;
     return retval;
 }
 
-/** Returns a Flags object that consists of the bitwise-xor of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator^(Flags<FlagType> lhs, FlagType rhs)
+constexpr auto operator^(Flags<FlagType> lhs, FlagType rhs)
 { return lhs ^ Flags<FlagType>(rhs); }
 
-/** Returns a Flags object that consists of the bitwise-xor of \a lhs and \a
-    rhs. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator^(FlagType lhs, Flags<FlagType> rhs)
+constexpr auto operator^(FlagType lhs, Flags<FlagType> rhs)
 { return Flags<FlagType>(lhs) ^ rhs; }
 
-/** Returns a Flags object that consists of the bitwise-xor of \a lhs and \a
-    rhs. */
-template <typename FlagType>
-constexpr typename std::enable_if_t<is_flag_type_v<FlagType>, Flags<FlagType>>
-operator^(FlagType lhs, FlagType rhs)
+template <typename FlagType, std::enable_if_t<is_flag_type_v<FlagType>>* = nullptr>
+constexpr auto operator^(FlagType lhs, FlagType rhs)
 { return Flags<FlagType>(lhs) ^ Flags<FlagType>(rhs); }
 
-/** Returns a Flags object that consists of all the flags known to
-    FlagSpec<FlagType>::instance() except those in \a flags. */
 template <typename FlagType>
-constexpr Flags<FlagType> operator~(Flags<FlagType> flags)
+constexpr auto operator~(Flags<FlagType> flags)
 {
     Flags<FlagType> retval;
-    for (const FlagType& flag : FlagSpec<FlagType>::instance()) {
+    for (FlagType flag : FlagSpec<FlagType>::instance()) {
         if (!(flag & flags))
             retval |= flag;
     }
@@ -439,9 +435,8 @@ constexpr Flags<FlagType> operator~(Flags<FlagType> flags)
 
 /** Returns a Flags object that consists of all the flags known to
     FlagSpec<FlagType>::instance() except \a flag. */
-template <typename FlagType>
-constexpr typename std::enable_if_t<is_flag_type_v<FlagType>, Flags<FlagType>>
-operator~(FlagType flag)
+template <typename FlagType, std::enable_if_t<is_flag_type_v<FlagType>>* = nullptr>
+constexpr auto operator~(FlagType flag)
 { return ~Flags<FlagType>(flag); }
 
 }

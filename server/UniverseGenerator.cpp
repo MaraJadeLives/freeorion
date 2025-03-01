@@ -166,7 +166,7 @@ namespace Delauney {
         triangle_list.push_front({num_points_in_vec - 1, num_points_in_vec - 2,
                                   num_points_in_vec - 3, points_vec});
 
-        if (points_vec.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        if (points_vec.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
             ErrorLogger() << "Attempted to run Delauney Triangulation on " << points_vec.size()
                           << " points.  The limit is " << std::numeric_limits<int>::max();
             return std::list<Delauney::DTTriangle>();
@@ -293,8 +293,8 @@ namespace {
         if (system1 == system2) return true; // system is always connected to itself
         if (0 == maxLaneJumps) return false; // no system is connected to any other system by less than 1 jump
 
-        if (!system_lanes.count(system1)) return false;     // start system not in lanes map
-        if (!system_lanes.count(system2)) return false;     // destination system not in lanes map
+        if (!system_lanes.contains(system1)) return false;     // start system not in lanes map
+        if (!system_lanes.contains(system2)) return false;     // destination system not in lanes map
 
         if (system_lanes.at(system1).empty()) return false; // no lanes out of start system
         if (system_lanes.at(system2).empty()) return false; // no lanes out of destination system
@@ -312,10 +312,9 @@ namespace {
         // without finding system2
         boost::container::flat_map<int, int> accessibleSystemsMap;
         accessibleSystemsMap.reserve(system_lanes.size());
-        for (auto& [sys, lanes] : system_lanes) {
-            (void)lanes;
+        for (const auto sys : system_lanes | range_keys)
             accessibleSystemsMap.emplace_hint(accessibleSystemsMap.end(), sys, -1);
-        }
+
         static constexpr int mapped_type_max = std::numeric_limits<decltype(accessibleSystemsMap)::mapped_type>::max();
         maxLaneJumps = std::min(maxLaneJumps, mapped_type_max);
 
@@ -414,7 +413,7 @@ namespace {
                     std::pair{cur_sys_id, dest1} : std::pair{dest1, cur_sys_id}};
 
                 // check if this lane has already been added to the set of lanes to remove
-                if (lanesToRemoveSet.count(lane1)) {
+                if (lanesToRemoveSet.contains(lane1)) {
                     ++laneSetIter1;
                     continue;
                 }
@@ -439,7 +438,7 @@ namespace {
 
                     // check if this lane has already been added to the
                     // set of lanes to remove
-                    if (lanesToRemoveSet.count(lane2)) {
+                    if (lanesToRemoveSet.contains(lane2)) {
                         ++laneSetIter2;
                         continue;
                     }
@@ -567,8 +566,8 @@ namespace {
         // Iterate through set of lanes to remove, and remove them in turn.
         // Lanes are sorted by length, so are processed longest-first
         for (const auto& [dist, lane] : lanes_to_remove) {
-            if (system_lanes[lane.first].count(lane.second) == 0 ||
-                system_lanes[lane.second].count(lane.first) == 0)
+            if (!system_lanes[lane.first].contains(lane.second) ||
+                !system_lanes[lane.second].contains(lane.first))
             { continue; }
 
             // remove lane
@@ -734,16 +733,11 @@ void SetActiveMetersToTargetMaxCurrentValues(ObjectMap& object_map) {
     // check for each pair of meter types.  if both exist, set active
     // meter current value equal to target meter current value.
     for (const auto& object : object_map.all()) {
-        TraceLogger(effects) << "  object: " << object->Name() << " (" << object->ID() << ")";
-        for (auto& entry : AssociatedMeterTypes()) {
-            if (Meter* meter = object->GetMeter(entry.first)) {
-                if (Meter* targetmax_meter = object->GetMeter(entry.second)) {
-                    TraceLogger(effects) << "    meter: " << entry.first
-                                         << "  before: " << meter->Current()
-                                         << "  set to: " << targetmax_meter->Current();
-                    meter->SetCurrent(targetmax_meter->Current());
-                }
-            }
+        for (auto& [meter_type, assoc_type] : AssociatedMeterTypes()) {
+            Meter* meter = object->GetMeter(meter_type);
+            Meter* targetmax_meter = object->GetMeter(assoc_type);
+            if (meter && targetmax_meter)
+                meter->SetCurrent(targetmax_meter->Current());
         }
     }
 }
@@ -810,12 +804,13 @@ bool SetEmpireHomeworld(Empire* empire, int planet_id, std::string species_name,
     context.species.AddSpeciesHomeworld(std::move(species_name), home_planet->ID());
 
     empire->SetCapitalID(home_planet->ID(), context.ContextObjects());
+    context.Empires().RefreshCapitalIDs();
     empire->AddExploredSystem(home_planet->SystemID(), BEFORE_FIRST_TURN, context.ContextObjects());
 
     return true;
 }
 
-void InitEmpires(const std::map<int, PlayerSetupData>& player_setup_data) {
+void InitEmpires(const std::map<int, PlayerSetupData>& player_setup_data, EmpireManager& empires) {
     DebugLogger() << "Initializing " << player_setup_data.size() << " empires";
 
     // copy empire colour table, so that individual colours can be removed after they're used
@@ -848,9 +843,9 @@ void InitEmpires(const std::map<int, PlayerSetupData>& player_setup_data) {
                 colors.erase(colors.begin());
             } else {
                 // as a last resort, make up a colour
-                empire_colour = {{static_cast<unsigned char>(RandInt(0, 255)),
-                                  static_cast<unsigned char>(RandInt(0, 255)),
-                                  static_cast<unsigned char>(RandInt(0, 255)),
+                empire_colour = {{static_cast<uint8_t>(RandInt(0, 255)),
+                                  static_cast<uint8_t>(RandInt(0, 255)),
+                                  static_cast<uint8_t>(RandInt(0, 255)),
                                   255}};
             }
         }
@@ -862,11 +857,11 @@ void InitEmpires(const std::map<int, PlayerSetupData>& player_setup_data) {
                       << " for player: " << player_name << " in team: " << psd.starting_team;
 
         // create new Empire object through empire manager
-        Empires().CreateEmpire(empire_id, std::move(empire_name), player_name,
-                               empire_colour, authenticated);
+        empires.CreateEmpire(empire_id, std::move(empire_name), player_name,
+                             empire_colour, authenticated);
     }
 
-    Empires().ResetDiplomacy();
+    empires.ResetDiplomacy();
 
     for (auto& [player_id1, psd1] : player_setup_data) {
         if (psd1.starting_team < 0)
@@ -879,7 +874,7 @@ void InitEmpires(const std::map<int, PlayerSetupData>& player_setup_data) {
             if (psd1.starting_team != psd2.starting_team)
                 continue;
 
-            Empires().SetDiplomaticStatus(player_id1, player_id2, DiplomaticStatus::DIPLO_ALLIED);
+            empires.SetDiplomaticStatus(player_id1, player_id2, DiplomaticStatus::DIPLO_ALLIED);
         }
     }
 }

@@ -24,9 +24,9 @@
 #include <future>
 #include <stdexcept>
 
-extern template TechManager::TechParseTuple parse::techs<TechManager::TechParseTuple>(const PythonParser& parser, const boost::filesystem::path& path);
+extern template TechManager::TechParseTuple parse::techs<TechManager::TechParseTuple>(const PythonParser& parser, const boost::filesystem::path& path, bool& success);
 
-IApp*  IApp::s_app = nullptr;
+IApp* IApp::s_app = nullptr;
 
 IApp::IApp() {
     if (s_app)
@@ -38,10 +38,8 @@ IApp::IApp() {
 IApp::~IApp()
 { s_app = nullptr; }
 
-IApp* IApp::GetApp()
-{ return s_app; }
 
-int IApp::MAX_AI_PLAYERS() {
+int IApp::MAX_AI_PLAYERS() noexcept {
     // This is not just a constant to avoid the static initialization
     // order fiasco, because it is used in more than one compilation
     // unit during static initialization, albeit a the moment in two
@@ -63,18 +61,18 @@ void IApp::StartBackgroundParsing(const PythonParser& python, std::promise<void>
     DebugLogger() << "Start background parsing...";
 
     // named value ref parsing can be done in parallel as the referencing happens after parsing
-    if (IsExistingDir(rdir / "scripting/common"))
-        GetNamedValueRefManager().SetNamedValueRefParse(Pending::ParseSynchronously(parse::named_value_refs, rdir / "scripting/common"));
+    if (IsExistingDir(rdir / "scripting/macros"))
+        GetNamedValueRefManager().SetNamedValueRefParse(Pending::ParseSynchronously(parse::named_value_refs, rdir / "scripting/macros"));
     else
-        ErrorLogger() << "Background parse path doesn't exist: " << (rdir / "scripting/common").string();
+        ErrorLogger() << "Background parse path doesn't exist: " << (rdir / "scripting/macros").string();
 
     if (IsExistingDir(rdir / "scripting/buildings"))
-        GetBuildingTypeManager().SetBuildingTypes(Pending::StartAsyncParsing(parse::buildings, rdir / "scripting/buildings"));
+        GetBuildingTypeManager().SetBuildingTypes(Pending::ParseSynchronously(parse::buildings, python, rdir / "scripting/buildings"));
     else
         ErrorLogger() << "Background parse path doesn't exist: " << (rdir / "scripting/buildings").string();
 
     if (IsExistingDir(rdir / "scripting/policies"))
-        GetPolicyManager().SetPolicies(Pending::StartAsyncParsing(parse::policies, rdir / "scripting/policies"));
+        GetPolicyManager().SetPolicies(Pending::StartAsyncParsing(parse::policies<std::vector<Policy>>, rdir / "scripting/policies"));
     else
         ErrorLogger() << "Background parse path doesn't exist: " << (rdir / "scripting/policies").string();
 
@@ -94,7 +92,7 @@ void IApp::StartBackgroundParsing(const PythonParser& python, std::promise<void>
         ErrorLogger() << "Background parse path doesn't exist: " << (rdir / "scripting/specials").string();
 
     if (IsExistingDir(rdir / "scripting/species"))
-        GetSpeciesManager().SetSpeciesTypes(Pending::StartAsyncParsing(parse::species, rdir / "scripting/species"));
+        GetSpeciesManager().SetSpeciesTypes(Pending::ParseSynchronously(parse::species, python, rdir / "scripting/species"));
     else
         ErrorLogger() << "Background parse path doesn't exist: " << (rdir / "scripting/species").string();
 

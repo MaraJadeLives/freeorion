@@ -1,18 +1,30 @@
-from common.base_prod import TECH_COST_MULTIPLIER
-from common.priorities import TARGET_AFTER_2ND_SCALING_PRIORITY
+from focs._effects import (
+    EffectsGroup,
+    Happiness,
+    NamedReal,
+    OwnedBy,
+    Planet,
+    SetTargetResearch,
+    Source,
+    TargetPopulation,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER
+from macros.priorities import TARGET_AFTER_2ND_SCALING_PRIORITY
 
 Tech(
     name="LRN_NASCENT_AI",
     description="LRN_NASCENT_AI_DESC",
     short_description="RESEARCH_SHORT_DESC",
     category="LEARNING_CATEGORY",
-    researchcost=24 * TECH_COST_MULTIPLIER,
+    researchcost=48 * TECH_COST_MULTIPLIER,
     researchturns=4,
     tags=["PEDIA_LEARNING_CATEGORY"],
-    prerequisites="LRN_ALGO_ELEGANCE",
+    prerequisites=["LRN_ALGO_ELEGANCE"],
     effectsgroups=[
         EffectsGroup(
-            scope=ProductionCenter
+            scope=Planet()
             & OwnedBy(empire=Source.Owner)
             & TargetPopulation(low=0.0001)
             & Happiness(low=NamedReal(name="LRN_NASCENT_AI_MIN_STABILITY", value=10)),

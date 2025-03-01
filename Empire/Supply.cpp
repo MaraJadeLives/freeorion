@@ -10,7 +10,6 @@
 #include "../universe/System.h"
 #include "../universe/Universe.h"
 #include "../universe/UniverseObject.h"
-#include "../universe/UniverseObjectVisitors.h"
 #include "../util/AppInterface.h"
 #include "../util/Logger.h"
 
@@ -24,18 +23,12 @@ namespace {
     const std::map<int, float> EMPTY_INT_FLOAT_MAP;
 }
 
-const std::map<int, std::set<std::pair<int, int>>>& SupplyManager::SupplyStarlaneTraversals() const
-{ return m_supply_starlane_traversals; }
-
 const std::set<std::pair<int, int>>& SupplyManager::SupplyStarlaneTraversals(int empire_id) const {
     auto it = m_supply_starlane_traversals.find(empire_id);
     if (it != m_supply_starlane_traversals.end())
         return it->second;
     return EMPTY_INT_PAIR_SET;
 }
-
-const std::map<int, std::set<std::pair<int, int>>>& SupplyManager::SupplyObstructedStarlaneTraversals() const
-{ return m_supply_starlane_obstructed_traversals; }
 
 const std::set<std::pair<int, int>>& SupplyManager::SupplyObstructedStarlaneTraversals(int empire_id) const {
     auto it = m_supply_starlane_obstructed_traversals.find(empire_id);
@@ -44,45 +37,45 @@ const std::set<std::pair<int, int>>& SupplyManager::SupplyObstructedStarlaneTrav
     return EMPTY_INT_PAIR_SET;
 }
 
-const std::map<int, std::set<int>>& SupplyManager::FleetSupplyableSystemIDs() const
-{ return m_fleet_supplyable_system_ids; }
-
-const std::set<int>& SupplyManager::FleetSupplyableSystemIDs(int empire_id) const
-{
+const std::set<int>& SupplyManager::FleetSupplyableSystemIDs(int empire_id) const {
     auto it = m_fleet_supplyable_system_ids.find(empire_id);
     if (it != m_fleet_supplyable_system_ids.end())
         return it->second;
     return EMPTY_INT_SET;
 }
 
-std::set<int> SupplyManager::FleetSupplyableSystemIDs(
+std::vector<int> SupplyManager::FleetSupplyableSystemIDs(
     int empire_id, bool include_allies, const ScriptingContext& context) const
 {
-    std::set<int> retval = FleetSupplyableSystemIDs(empire_id);
+    auto& direct_sys = FleetSupplyableSystemIDs(empire_id);
+    std::vector<int> retval(direct_sys.begin(), direct_sys.end());
     if (!include_allies)
         return retval;
 
+    retval.reserve(context.ContextObjects().size<System>());
     // add supplyable systems of all allies
     for (auto& [other_empire_id, systems] : m_fleet_supplyable_system_ids) {
         if (other_empire_id == empire_id)
             continue;
-        if (systems.empty() || context.ContextDiploStatus(empire_id, other_empire_id) != DiplomaticStatus::DIPLO_ALLIED)
+        if (systems.empty())
             continue;
-        retval.insert(systems.begin(), systems.end());
+        if (context.ContextDiploStatus(empire_id, other_empire_id) != DiplomaticStatus::DIPLO_ALLIED)
+            continue;
+        retval.insert(retval.end(), systems.begin(), systems.end());
     }
+    std::sort(retval.begin(), retval.end());
+    auto unique_it = std::unique(retval.begin(), retval.end());
+    retval.resize(std::distance(retval.begin(), unique_it));
     return retval;
 }
 
 int SupplyManager::EmpireThatCanSupplyAt(int system_id) const {
     for (auto& [empire_id, sys_ids] : m_fleet_supplyable_system_ids) {
-        if (sys_ids.count(system_id))
+        if (sys_ids.contains(system_id))
             return empire_id;
     }
     return ALL_EMPIRES;
 }
-
-const std::map<int, std::set<std::set<int>>>& SupplyManager::ResourceSupplyGroups() const
-{ return m_resource_supply_groups; }
 
 const std::set<std::set<int>>& SupplyManager::ResourceSupplyGroups(int empire_id) const {
     auto it = m_resource_supply_groups.find(empire_id);
@@ -91,18 +84,12 @@ const std::set<std::set<int>>& SupplyManager::ResourceSupplyGroups(int empire_id
     return EMPTY_INT_SET_SET;
 }
 
-const std::map<int, float>& SupplyManager::PropagatedSupplyRanges() const
-{ return m_propagated_supply_ranges; }
-
 const std::map<int, float>& SupplyManager::PropagatedSupplyRanges(int empire_id) const {
     auto emp_it = m_empire_propagated_supply_ranges.find(empire_id);
     if (emp_it == m_empire_propagated_supply_ranges.end())
         return EMPTY_INT_FLOAT_MAP;
     return emp_it->second;
 }
-
-const std::map<int, float>& SupplyManager::PropagatedSupplyDistances() const
-{ return m_propagated_supply_distances; }
 
 const std::map<int, float>& SupplyManager::PropagatedSupplyDistances(int empire_id) const {
     auto emp_it = m_empire_propagated_supply_distances.find(empire_id);
@@ -119,18 +106,13 @@ bool SupplyManager::SystemHasFleetSupply(int system_id, int empire_id) const {
     auto it = m_fleet_supplyable_system_ids.find(empire_id);
     if (it == m_fleet_supplyable_system_ids.end())
         return false;
-    const std::set<int>& sys_set = it->second;
-    if (sys_set.count(system_id))
-        return true;
-    return false;
+    const auto& sys_set = it->second;
+    return sys_set.contains(system_id);
 }
 
 bool SupplyManager::SystemHasFleetSupply(int system_id, int empire_id, bool include_allies,
-                                         const std::map<std::pair<int, int>, DiplomaticStatus>& diplo_statuses) const
+                                         const DiploStatusMap& diplo_statuses) const
 {
-    static_assert(std::is_same_v<std::map<std::pair<int, int>, DiplomaticStatus>,
-                                 EmpireManager::DiploStatusMap>);
-
     if (!include_allies)
         return SystemHasFleetSupply(system_id, empire_id);
     if (system_id == INVALID_OBJECT_ID)
@@ -138,7 +120,7 @@ bool SupplyManager::SystemHasFleetSupply(int system_id, int empire_id, bool incl
     if (empire_id == ALL_EMPIRES)
         return false;
 
-    std::set<int> empire_ids = EmpireManager::GetEmpireIDsWithDiplomaticStatusWithEmpire(
+    auto empire_ids = EmpireManager::GetEmpireIDsWithDiplomaticStatusWithEmpire(
         empire_id, DiplomaticStatus::DIPLO_ALLIED, diplo_statuses);
     empire_ids.insert(empire_id);
 
@@ -147,7 +129,7 @@ bool SupplyManager::SystemHasFleetSupply(int system_id, int empire_id, bool incl
         if (sys_set_it == m_fleet_supplyable_system_ids.end())
             continue;
         const auto& sys_set = sys_set_it->second;
-        if (sys_set.count(system_id))
+        if (sys_set.contains(system_id))
             return true;
     }
 
@@ -245,7 +227,7 @@ namespace {
         float accumulator_current = 0.0f;
         float accumulator_max = 0.0f;
 
-        for (auto& obj : objects.find(sys->ObjectIDs())) {
+        for (auto* obj : objects.findRaw(sys->ObjectIDs())) {
             if (!obj || !obj->OwnedBy(empire_id))
                 continue;
             if (const auto* m = obj->GetMeter(MeterType::METER_SUPPLY))
@@ -260,11 +242,11 @@ namespace {
         if (empire_id == ALL_EMPIRES)
             return 0.0f;
 
+        auto is_owned = [empire_id](const UniverseObject* obj) noexcept { return obj->OwnedBy(empire_id); };
+
         float accumulator_current = 0.0f;
-        for (auto& obj : objects.find<Planet>(OwnedVisitor(empire_id))) { // TODO: handle ships if they can have supply meters
-            if (!obj)
-                continue;
-            if (auto* m = obj->GetMeter(MeterType::METER_SUPPLY))
+        for (auto* obj : objects.findRaw<Planet>(is_owned)) { // TODO: handle ships if they can have supply meters
+            if (auto* m = obj->UniverseObject::GetMeter(MeterType::METER_SUPPLY))
                 accumulator_current += m->Current();
         }
 
@@ -272,14 +254,14 @@ namespace {
     }
 
     float DistanceBetweenObjects(int obj1_id, int obj2_id, const ObjectMap& objects) {
-        auto obj1 = objects.get<System>(obj1_id);
+        auto const obj1 = objects.getRaw<const System>(obj1_id);
         if (!obj1)
             return 0.0f;
-        auto obj2 = objects.get<System>(obj2_id);
+        auto const obj2 = objects.getRaw<const System>(obj2_id);
         if (!obj2)
             return 0.0f;
-        double dx = obj2->X() - obj1->X();
-        double dy = obj2->Y() - obj1->Y();
+        const double dx = obj2->X() - obj1->X();
+        const double dy = obj2->Y() - obj1->Y();
         return static_cast<float>(std::sqrt(dx*dx + dy*dy));
     }
 }
@@ -306,7 +288,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
     // can't exchange with any other systems.
 
     // which systems can share resources depends on system supply ranges, which
-    // systems have obstructions to supply propagation for reach empire, and
+    // systems have obstructions to supply propagation for each empire, and
     // the ranges and obstructions of other empires' supply, as only one empire
     // can supply each system or propagate along each starlane. one empire's
     // propagating supply can push back another's, if the pusher's range is
@@ -338,8 +320,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
         }();
     }
     for (auto& [empire_id, systems] : empire_system_supply_ranges) {
-        for (auto& [system_id, ignored_range] : systems) {
-            (void)ignored_range;
+        for (const auto system_id : systems | range_keys) {
             empire_system_supply_range_sums[empire_id][system_id] =
                 EmpireTotalSupplyRangeSumInSystem(empire_id, system_id, objects);
         }
@@ -347,14 +328,13 @@ void SupplyManager::Update(const ScriptingContext& context) {
     }
 
 
-    for (const auto& [empire_id, empire] : empires) {
-        (void)empire;
+    for (const auto empire_id : empires | range_keys) {
         const auto& known_destroyed_objects = universe.EmpireKnownDestroyedObjectIDs(empire_id);
         std::set<int> systems_containing_friendly_fleets;
 
-        for (auto& fleet : objects.all<Fleet>()) {
+        for (auto* fleet : objects.allRaw<Fleet>()) {
             int system_id = fleet->SystemID();
-            if (system_id == INVALID_OBJECT_ID || known_destroyed_objects.count(fleet->ID()))
+            if (system_id == INVALID_OBJECT_ID || known_destroyed_objects.contains(fleet->ID()))
                 continue;
 
             if (fleet->CanDamageShips(context) && fleet->Obstructive() && fleet->OwnedBy(empire_id)) {
@@ -387,25 +367,23 @@ void SupplyManager::Update(const ScriptingContext& context) {
         }
 
         // for systems where others have supply sources and this empire doesn't
-        // and where this empire has no fleets...
-        // supply is obstructed
+        // and where this empire has no fleets, supply is obstructed
         for (int system_id : systems_where_others_have_supply_sources_and_current_empire_doesnt) {
-            if (!systems_containing_friendly_fleets.count(system_id))
+            if (!systems_containing_friendly_fleets.contains(system_id))
                 empire_supply_unobstructed_systems[empire_id].erase(system_id);
         }
     }
 
 
     // system connections each empire can see / use for supply propagation
-    std::map<int, std::map<int, std::set<int>>> empire_visible_starlanes;
-    for (auto& [empire_id, empire] : empires) {
-        empire_visible_starlanes[empire_id] = empire->KnownStarlanes(universe);
+    const auto to_known_lanes = [&universe](const auto& id_e) -> decltype(auto)
+    { return std::pair(id_e.first, id_e.second->KnownStarlanes(universe)); };
 
-        if (empire_visible_starlanes[empire_id].empty())
-            ErrorLogger(supply) << "Empire " << empire_id << " has no known starlanes?!";
-    }
+    auto lanes_rng = empires | range_transform(to_known_lanes);
+    boost::container::flat_map<int, Empire::LaneSet> empire_visible_starlanes{lanes_rng.begin(), lanes_rng.end()};
 
-    std::set<int> systems_with_supply_in_them;
+    boost::container::flat_set<int> systems_with_supply_in_them;
+    systems_with_supply_in_them.reserve(objects.size<System>());
 
     // store (supply range in jumps, and distance to supply source) of all
     // unobstructed systems before propagation, and add to list of systems
@@ -417,7 +395,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
         const std::set<int>& unobstructed_systems = empire_supply_unobstructed_systems[empire_id];
 
         for (const auto& [system_id, system_supply_range] : system_ranges) {
-            if (unobstructed_systems.count(system_id)) {
+            if (unobstructed_systems.contains(system_id)) {
                 // stored: first -> source supply range.  second -> distance to source (0 for the source itself)
                 empire_propagating_supply_ranges[empire_id][system_id] = {system_supply_range, 0.0f};
                 if (system_supply_range > max_range)
@@ -434,19 +412,26 @@ void SupplyManager::Update(const ScriptingContext& context) {
         TraceLogger(supply) << "Propagating at range " << range_to_spread;
 
         // update systems that have supply in them
-        for (auto& [empire_id, supply_ranges] : empire_propagating_supply_ranges) {
-            (void)empire_id; // quiet warning
-            for (auto& [system_id, supply_range] : supply_ranges) {
-                (void)supply_range; // quiet warning
-                systems_with_supply_in_them.insert(system_id);
-            }
+        for (auto& supply_ranges : empire_propagating_supply_ranges | range_values) {
+            static_assert(std::is_same_v<std::decay_t<decltype(supply_ranges)>,
+                          std::map<int, std::pair<float, float>>>,
+                          "make sure supply ranges are sorted for use with ordered_unique_range below");
+            auto sys_ids_rng = supply_ranges | range_keys;
+#if BOOST_VERSION > 107800
+            systems_with_supply_in_them.insert(boost::container::ordered_unique_range,
+                                               sys_ids_rng.begin(), sys_ids_rng.end());
+#else
+            std::decay_t<decltype(systems_with_supply_in_them)>::sequence_type scratch;
+            scratch.reserve(supply_ranges.size());
+            range_copy(sys_ids_rng, std::back_inserter(scratch));
+            systems_with_supply_in_them.insert(scratch.begin(), scratch.end());
+#endif
         }
-
 
         // resolve supply fights between multiple empires in one system.
         // pass over all empire-supplied systems, removing supply for all
         // but the empire with the highest supply range in each system
-        for (const auto& sys : objects.find<System>(systems_with_supply_in_them)) {
+        for (const auto* sys : objects.findRaw<System>(systems_with_supply_in_them)) {
             TraceLogger(supply) << "Determining top supply empire in system " << sys->Name() << " (" << sys->ID() << ")";
             // sort empires by range in this system
             std::map<float, std::set<int>> empire_ranges_here;
@@ -461,10 +446,8 @@ void SupplyManager::Update(const ScriptingContext& context) {
 
                 // empires with planets in system
                 bool has_outpost = false, has_colony = false;
-                for (auto& planet : objects.find<Planet>(sys->PlanetIDs())) {
-                    if (!planet)
-                        continue;
-                    if (!planet->OwnedBy(empire_id))
+                for (auto* planet : objects.findRaw<Planet>(sys->PlanetIDs())) {
+                    if (!planet || !planet->OwnedBy(empire_id))
                         continue;
                     if (!planet->SpeciesName().empty())
                         has_colony = true;
@@ -567,9 +550,9 @@ void SupplyManager::Update(const ScriptingContext& context) {
                 empire_supply_unobstructed_systems[empire_id].erase(sys->ID());
 
                 auto& lane_traversals = m_supply_starlane_traversals[empire_id];
-                auto lane_traversals_initial = lane_traversals;
+                const auto lane_traversals_initial{lane_traversals};
                 auto& obstructed_traversals = m_supply_starlane_obstructed_traversals[empire_id];
-                auto obstrcuted_traversals_initial = obstructed_traversals;
+                const auto obstrcuted_traversals_initial{obstructed_traversals};
 
                 // remove from traversals departing from or going to this system for this empire,
                 // and set any traversals going to this system as obstructed
@@ -610,28 +593,51 @@ void SupplyManager::Update(const ScriptingContext& context) {
         // iteration that are in the current map, give adjacent systems one
         // less supply in the next iteration (unless as much or more is already
         // there)
-        for (auto& [empire_id, prev_sys_ranges] : empire_propagating_supply_ranges) {
+        for (const auto& [empire_id, prev_sys_ranges] : empire_propagating_supply_ranges) {
             TraceLogger(supply) << ">-< Doing supply propagation for empire " << empire_id
                                 << " >-<  at spread range: " << range_to_spread;
             const auto& unobstructed_systems = empire_supply_unobstructed_systems[empire_id];
 
-            for (auto& [system_id, range_and_dist] : prev_sys_ranges) {
-                auto& [range, distance_to_supply_source] = range_and_dist;
+            const auto e_it = empire_visible_starlanes.find(empire_id);
+            if (e_it == empire_visible_starlanes.end())
+                continue;
+            const auto& visible_lanes{e_it->second};
+
+
+            for (const auto& [system_id, range_and_dist] : prev_sys_ranges) {
+                const auto& [range, distance_to_supply_source] = range_and_dist;
                 TraceLogger(supply) << " ... for system " << system_id << " with range: " << range;
+
+                // get lanes starting in system with id system_id
+                const Empire::LaneEndpoints system_lane{system_id, system_id};
+                static constexpr auto lane_starts_less = [](const auto lane1, const auto lane2)
+                { return lane1.start < lane2.start; };
+                const auto system_lanes_rng = range_equal(visible_lanes, system_lane, lane_starts_less);
+                static constexpr auto to_lane_end = [](const auto lane) { return lane.end; };
+
 
                 // does the source system have the correct supply range to propagate outwards in this iteration?
                 if (std::floor(range) != range_to_spread)
                     continue;
                 float range_after_one_more_jump = range - 1.0f; // what to set adjacent systems' ranges to (at least)
 
-                for (int lane_end_sys_id : empire_visible_starlanes[empire_id][system_id])
-                    TraceLogger(supply) << "Propagating from system " << system_id << " to " << lane_end_sys_id
-                                        << " range: " << range << " and distance: " << distance_to_supply_source;
+                TraceLogger(supply) <<
+                    [](const auto distance_to_supply_source, const auto range, const auto empire_id,
+                       const auto system_id, const auto system_lanes_rng)
+                {
+                    std::string retval = "Propagating from system " + std::to_string(system_id) + " to ";
+                    for (const int lane_end_sys_id : system_lanes_rng | range_transform(to_lane_end))
+                        retval.append(std::to_string(lane_end_sys_id)).append(" ");
+                    retval.append("range: ").append(std::to_string(range))
+                          .append(" and distance: ").append(std::to_string(distance_to_supply_source));
+                    return retval;
+                }(distance_to_supply_source, range, empire_id, system_id, system_lanes_rng);
+
 
                 // attempt to propagate to all adjacent systems...
-                for (int lane_end_sys_id : empire_visible_starlanes[empire_id][system_id]) {
+                for (const int lane_end_sys_id : system_lanes_rng | range_transform(to_lane_end)) {
                     // is propagation to the adjacent system obstructed?
-                    if (!unobstructed_systems.count(lane_end_sys_id)) {
+                    if (!unobstructed_systems.contains(lane_end_sys_id)) {
                         // propagation obstructed!
                         TraceLogger(supply) << "Added obstructed traversal from " << system_id << " to "
                                             << lane_end_sys_id << " due to not being on unobstructed systems";
@@ -662,15 +668,15 @@ void SupplyManager::Update(const ScriptingContext& context) {
                     }
 
                     // otherwise, propagate into system...
-                    float lane_length = DistanceBetweenObjects(system_id, lane_end_sys_id, objects);
-                    float distance_to_supply_source_after_next_lane = lane_length + distance_to_supply_source;
+                    const float lane_length = DistanceBetweenObjects(system_id, lane_end_sys_id, objects);
+                    const float distance_to_supply_source_after_next_lane = lane_length + distance_to_supply_source;
 
                     TraceLogger(supply) << "Attempting to propagate into system: " << lane_end_sys_id << " the new range: "
                                         << range_after_one_more_jump << " and distance: " << distance_to_supply_source_after_next_lane;
 
                     // if propagating supply would increase the range of the adjacent system,
                     // or decrease the distance to the adjacent system from a supply source...
-                    auto prev_range_it = prev_sys_ranges.find(lane_end_sys_id);
+                    const auto prev_range_it = prev_sys_ranges.find(lane_end_sys_id);
                     if (prev_range_it == prev_sys_ranges.end()) {
                         empire_propagating_supply_ranges_next[empire_id][lane_end_sys_id] =
                             {range_after_one_more_jump, distance_to_supply_source_after_next_lane};
@@ -695,11 +701,11 @@ void SupplyManager::Update(const ScriptingContext& context) {
                     TraceLogger(supply) << "Added traversal from " << system_id << " to " << lane_end_sys_id;
 
                     // erase any previous obstructed traversal that just succeeded
-                    if (m_supply_starlane_obstructed_traversals[empire_id].count({system_id, lane_end_sys_id})) {
+                    if (m_supply_starlane_obstructed_traversals[empire_id].contains({system_id, lane_end_sys_id})) {
                         //TraceLogger(supply) << "Removed obstructed traversal from " << system_id << " to " << lane_end_sys_id;
                         m_supply_starlane_obstructed_traversals[empire_id].erase({system_id, lane_end_sys_id});
                     }
-                    if (m_supply_starlane_obstructed_traversals[empire_id].count({lane_end_sys_id, system_id})) {
+                    if (m_supply_starlane_obstructed_traversals[empire_id].contains({lane_end_sys_id, system_id})) {
                         //TraceLogger(supply) << "Removed obstructed traversal from " << lane_end_sys_id << " to " << system_id;
                         m_supply_starlane_obstructed_traversals[empire_id].erase({lane_end_sys_id, system_id});
                     }
@@ -711,9 +717,9 @@ void SupplyManager::Update(const ScriptingContext& context) {
         empire_propagating_supply_ranges = std::move(empire_propagating_supply_ranges_next);
     }
 
-    //// DEBUG
+
     TraceLogger(supply) << "SupplyManager::Update: after removing conflicts, empires can provide supply to the following system ids (and ranges in jumps):";
-    for (auto& [empire_id, supply_ranges] : empire_propagating_supply_ranges) {
+    for (const auto& [empire_id, supply_ranges] : empire_propagating_supply_ranges) {
         TraceLogger(supply) << " ... empire " << empire_id << ":  " << [&, rngs{supply_ranges}]() {
             std::stringstream ss;
             for (auto& [sys_id, jumps_distance] : rngs)
@@ -722,11 +728,11 @@ void SupplyManager::Update(const ScriptingContext& context) {
         }();
 
     }
-    //// END DEBUG
+
 
     // record which systems are fleet supplyable by each empire (after resolving conflicts in each system)
     // empire_propagating_supply_ranges[empire_id][system_id] = {system_supply_range, distance to source};
-    for (auto& [empire_id, system_supply_ranges] : empire_propagating_supply_ranges) {
+    for (const auto& [empire_id, system_supply_ranges] : empire_propagating_supply_ranges) {
         for (auto& [system_id, range_distance] : system_supply_ranges) {
             if (range_distance.first < 0.0f)
                 continue;   // negative supply doesn't count... zero does (it just reaches)
@@ -752,63 +758,175 @@ void SupplyManager::Update(const ScriptingContext& context) {
     }
 
 
+    for (const auto& [empire_id, traversals] : m_supply_starlane_traversals) {
+        TraceLogger(supply) << "Empire " << empire_id << " propagated supply traversals:";
+        for (auto const& [a, b] : traversals)
+            TraceLogger(supply) << " ... " << a << " to " << b;
+    }
+    for (const auto& [empire_id, traversals] : m_supply_starlane_obstructed_traversals) {
+        TraceLogger(supply) << "Empire " << empire_id << " obstructed supply traversals:";
+        for (auto const& [a, b] : traversals)
+            TraceLogger(supply) << " ... " << a << " to " << b;
+    }
 
     auto ally_merged_supply_starlane_traversals{m_supply_starlane_traversals};
-
-    // add connections into allied empire systems when their obstructed lane
-    // traversals originate on either end of a starlane
-    for (const auto& [supply_empire_id, empire_obstructed_traversals] :
-         m_supply_starlane_obstructed_traversals)
-    {
-        // output:
-        auto& empire_supply_traversals = ally_merged_supply_starlane_traversals[supply_empire_id];
+    auto allies_of = [&context](int empire_id)
+    { return context.GetEmpireIDsWithDiplomaticStatusWithEmpire(empire_id, DiplomaticStatus::DIPLO_ALLIED); };
 
 
-        std::set<int> allies_of_empire = context.GetEmpireIDsWithDiplomaticStatusWithEmpire(
-            supply_empire_id, DiplomaticStatus::DIPLO_ALLIED);
+    // add connections into allied empire systems where traversals are
+    // obstructed on one side by the ally's supply
+    for (const auto& [supply_empire_id, empire_obstructed_traversals] : m_supply_starlane_obstructed_traversals) {
+        auto& empire_supply_traversals = ally_merged_supply_starlane_traversals[supply_empire_id]; // output
+        const auto& supply_empire_baseline_unobstructed_systems =
+            empires.GetEmpire(supply_empire_id)->SupplyUnobstructedSystems();
+
+        const auto allies_of_empire = allies_of(supply_empire_id);
         for (int ally_id : allies_of_empire) {
-            auto const& ally_obstructed_traversals = m_supply_starlane_obstructed_traversals[ally_id];
+            const auto& ally_supplyable_systems = m_empire_propagated_supply_ranges[ally_id];
+            const auto& ally_baseline_unobstructed_systems =
+                empires.GetEmpire(ally_id)->SupplyUnobstructedSystems();
+            auto& ally_supply_traversals = ally_merged_supply_starlane_traversals[ally_id]; // output
 
-            // find cases where outer loop empire has an obstructed traversal from A to B
-            // and inner loop empire has an obstructed traversal from B to A
-            for (auto const& [empire_trav1, empire_trav2] : empire_obstructed_traversals) {
-                for (auto const& [ally_trav1, ally_trav2] : ally_obstructed_traversals) {
-                    if (empire_trav1 == ally_trav2 && empire_trav2 == ally_trav1) {
-                        empire_supply_traversals.emplace(empire_trav1, empire_trav2);
-                        empire_supply_traversals.emplace(empire_trav2, empire_trav1);
+            // find cases where outer loop empire has an obstructed traversal from
+            // system A to system B and inner loop empire (the ally) has supply in
+            // system B
+            for (auto const& [sys_A, sys_B] : empire_obstructed_traversals) {
+                TraceLogger(supply) << "for empire " << supply_empire_id
+                                    << " obstructed traversal from " << sys_A << " - " << sys_B;
+                if (!ally_supplyable_systems.contains(sys_B))
+                    continue;
+                TraceLogger(supply) << " ... supplied by ally " << ally_id;
+                if (ally_supplyable_systems.contains(sys_B)) {
+                    TraceLogger(supply) << " ... " << sys_A
+                                        << (supply_empire_baseline_unobstructed_systems.contains(sys_A) ? " un" : " ")
+                                        << "obstructed for empire " << supply_empire_id;
+                    TraceLogger(supply) << " ... " << sys_B
+                                        << (supply_empire_baseline_unobstructed_systems.contains(sys_B) ? " un" : " ")
+                                        << "obstructed for empire " << supply_empire_id;
+                    if (supply_empire_baseline_unobstructed_systems.contains(sys_B) &&
+                        supply_empire_baseline_unobstructed_systems.contains(sys_A))
+                    {
+                        TraceLogger(supply) << " ... ... adding empire " << supply_empire_id
+                                            << " traversals for " << sys_A << " and " << sys_B;
+                        empire_supply_traversals.emplace(sys_A, sys_B);
+                        empire_supply_traversals.emplace(sys_B, sys_A);
                     }
+
+                    TraceLogger(supply) << " ... " << sys_A
+                                        << (ally_baseline_unobstructed_systems.contains(sys_A) ? " un" : " ")
+                                        << "obstructed for empire " << ally_id;
+                    TraceLogger(supply) << " ... " << sys_B
+                                        << (ally_baseline_unobstructed_systems.contains(sys_B) ? " un" : " ")
+                                        << "obstructed for empire " << ally_id;
+                    if (ally_baseline_unobstructed_systems.contains(sys_B) &&
+                        ally_baseline_unobstructed_systems.contains(sys_A))
+                    {
+                        TraceLogger(supply) << " ... ... adding empire " << ally_id
+                                            << " traversals for " << sys_A << " and " << sys_B;
+                        ally_supply_traversals.emplace(sys_A, sys_B);
+                        ally_supply_traversals.emplace(sys_B, sys_A);
+                    }
+
                 }
             }
         }
     }
 
-    // add allied supply starlane traversals to empires' traversals, so that
-    // allies can use eachothers' supply networks
-    for (auto& empire_set : ally_merged_supply_starlane_traversals) {
-        auto& output_empire_traversals = empire_set.second;
-        for (int ally_id : context.GetEmpireIDsWithDiplomaticStatusWithEmpire(
-            empire_set.first, DiplomaticStatus::DIPLO_ALLIED))
-        {
-            // copy ally traversals into the output empire traversals set
-            for (const auto& traversal_pair : m_supply_starlane_traversals[ally_id])
-                output_empire_traversals.insert(traversal_pair);
+
+    for (const auto& [supply_empire_id, empire] : empires) {
+        const auto allies_of_empire = allies_of(supply_empire_id);
+        if (allies_of_empire.empty())
+            continue;
+        const auto& empire_directly_supplied = m_empire_propagated_supply_ranges[supply_empire_id];
+        const auto& empire_obstructed_traversals = m_supply_starlane_obstructed_traversals[supply_empire_id];
+        TraceLogger(supply) << " CHECK BORDERS of empire " << supply_empire_id << "";
+        for (auto const& [sys_A, sys_B] : empire_obstructed_traversals) {
+            //TraceLogger(supply) << "(?empire " << supply_empire_id << "?) " << sys_A << " - " << sys_B << " (empire ?)";
+            if (!empire_directly_supplied.contains(sys_A))
+                ErrorLogger(supply) << "Error: system " << sys_A << " is NOT directly supplied by empire " << supply_empire_id << ", but it should";
+            // Find the supplier of B and find the intersection of allies between the B supplier and the A supplier
+            for (const auto& [b_empire_id, b_empire] : empires) {
+                //TraceLogger(supply) << "Check if (empire " << b_empire_id << ") " << " is supplier of " << sys_B;
+                if (!m_empire_propagated_supply_ranges[b_empire_id].contains(sys_B))
+                    continue;
+                TraceLogger(supply) << " ... empire " << supply_empire_id << ") " << sys_A << " - " << sys_B << " (empire " << b_empire_id << ")";
+                // all allies of a_empire which are allies of b_empire may use this traversal
+                for (int a_ally_id : allies_of_empire) {
+                    TraceLogger(supply) << " ... Check if (empire " << a_ally_id << ") " << " is allied to supplier of " << sys_B << " (empire " << b_empire_id << ")";
+                    if (a_ally_id == b_empire_id)
+                        continue;
+                    if (empires.GetDiplomaticStatus(a_ally_id, b_empire_id) >= DiplomaticStatus::DIPLO_ALLIED) {
+                        TraceLogger(supply) << " ... ... Empire " << a_ally_id << " may use (empire " << supply_empire_id << ")" << sys_A << " - " << sys_B << " (empire " << b_empire_id << ") as its allied with " << b_empire_id;
+                        auto& a_ally_supply_traversals = ally_merged_supply_starlane_traversals[a_ally_id]; // output
+                        a_ally_supply_traversals.emplace(sys_A, sys_B);
+                        a_ally_supply_traversals.emplace(sys_B, sys_A);
+                    }
+                }
+                break; // stop after finding the one supplier of B
+            }
         }
+        TraceLogger(supply) << " DONE CHECK BORDERS of empire " << supply_empire_id;
     }
+
+    for (const auto& [empire_id, traversals] : ally_merged_supply_starlane_traversals) {
+        TraceLogger(supply) << "Empire " << empire_id << " supply traversals after ally connections:";
+        for (auto const& [a, b] : traversals)
+            TraceLogger(supply) << " ... " << a << " to " << b;
+    }
+
 
     // same for fleet supplyable system ids, as these are added to supplyable
     // groups in following code
-    auto ally_merged_fleet_supplyable_system_ids = m_fleet_supplyable_system_ids;
-    for (auto& empire_set : ally_merged_fleet_supplyable_system_ids) {
-        std::set<int>& output_empire_ids = empire_set.second;
-        for (int ally_id : context.GetEmpireIDsWithDiplomaticStatusWithEmpire(
-            empire_set.first, DiplomaticStatus::DIPLO_ALLIED))
-        {
-            // copy ally traversals into the output empire traversals set
-            for (int sys_id : m_fleet_supplyable_system_ids[ally_id])
-                output_empire_ids.insert(sys_id);
+    auto ally_merged_fleet_supplyable_system_ids{m_fleet_supplyable_system_ids};
+    for (auto& [empire_id, supplyable] : ally_merged_fleet_supplyable_system_ids) {
+        const auto ally_ids = context.GetEmpireIDsWithDiplomaticStatusWithEmpire(
+            empire_id, DiplomaticStatus::DIPLO_ALLIED);
+        for (int ally_id : ally_ids) {
+            const auto& ally_supplyable_systems = m_fleet_supplyable_system_ids[ally_id];
+            // copy ally supplyable systems
+            supplyable.insert(ally_supplyable_systems.begin(), ally_supplyable_systems.end());
         }
     }
+    for (const auto& [empire_id, supplyable] : ally_merged_fleet_supplyable_system_ids) {
+        TraceLogger(supply) << "Empire " << empire_id << " supplyable systems after adding allies:";
+        for (auto const& a : supplyable)
+            TraceLogger(supply) << " ... " << a;
+    }
 
+
+    // iterate...
+    bool something_changed = true;
+    std::size_t limit = 50;
+    while (something_changed && limit-- > 0) {
+        const auto initial{ally_merged_supply_starlane_traversals};
+
+        // add allied supply starlane traversals to empires' traversals, so that
+        // allies can use eachothers' supply networks
+        for (auto& [empire_id, traversals] : ally_merged_supply_starlane_traversals) {
+            const auto ally_ids = allies_of(empire_id);
+
+            for (auto& [prior_empire_id, prior_traversals] : initial) {
+                if (!ally_ids.contains(prior_empire_id))
+                    continue; // only copy traversals of allied empires
+                const auto& prior_empire_direct_supplied_systems = m_empire_propagated_supply_ranges[prior_empire_id];
+
+                for (auto& [sys_A, sys_B] : prior_traversals) {
+                    if (prior_empire_direct_supplied_systems.contains(sys_A) &&
+                        prior_empire_direct_supplied_systems.contains(sys_B))
+                    { traversals.emplace(sys_A, sys_B);} // only copy traversals to and from systems the allied empire directly propagated
+                }
+            }
+        }
+
+        something_changed = (initial != ally_merged_supply_starlane_traversals);
+    }
+    for (const auto& [empire_id, traversals] : ally_merged_supply_starlane_traversals) {
+        TraceLogger(supply) << "Empire " << empire_id << " supply traversals after merging allies "
+                            << (50 - limit) << " times:";
+        for (auto const& [a, b] : traversals)
+            TraceLogger(supply) << " ... " << a << " to " << b;
+    }
 
 
     // determine supply-connected groups of systems for each empire.
@@ -816,10 +934,8 @@ void SupplyManager::Update(const ScriptingContext& context) {
     // supply-exchanging systems as possible.  This requires finding the
     // connected components of an undirected graph, where the node
     // adjacency are the directly-connected systems determined above.
-    for (auto& [empire_id, ignored] : empire_propagating_supply_ranges) {
-        (void)ignored;
-
-        // assemble all direct connections between systems from remaining traversals
+    for (const auto empire_id : empire_propagating_supply_ranges | range_keys) {
+        // assemble all direct connections between systems from traversals
         std::map<int, std::set<int>> supply_groups_map;
         for (auto const& lane : ally_merged_supply_starlane_traversals[empire_id]) {
             supply_groups_map[lane.first].insert(lane.second);
@@ -838,7 +954,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
 
         TraceLogger(supply) << "Empire " << empire_id << " supply groups map before merging:";
         for (auto const& q : supply_groups_map) {
-            TraceLogger(supply) << " ... src: " << q.first << " to: " << [&]() {
+            TraceLogger(supply) << " ... " << q.first << " to: " << [&]() {
                 std::stringstream other_ids;
                 for (auto const& r : q.second)
                     other_ids << r << ", ";
@@ -868,7 +984,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
 
         // add edges for all direct connections between systems
         // and add edges from fleet supplyable systems to themselves
-        for (auto& supply_group : supply_groups_map) {
+        for (const auto& supply_group : supply_groups_map) {
             int start_graph_id = sys_id_to_graph_id[supply_group.first];
             for (int system_id : supply_group.second) {
                 int end_graph_id = sys_id_to_graph_id[system_id];
@@ -879,7 +995,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
         // declare storage and fill with the component id (group id of connected systems)
         // for each graph vertex
         std::vector<int> components(boost::num_vertices(graph));
-        boost::connected_components(graph, &components[0]);
+        boost::connected_components(graph, components.data());
 
         // convert results back from graph id to system id, and into desired output format
         // output: std::map<int, std::set<std::set<int>>>& m_resource_supply_groups
@@ -897,7 +1013,7 @@ void SupplyManager::Update(const ScriptingContext& context) {
             m_resource_supply_groups[empire_id].insert(std::move(component_set.second));
     }
 
-    for (auto& [empire_id, group_sets] : m_resource_supply_groups) {
+    for (const auto& [empire_id, group_sets] : m_resource_supply_groups) {
         DebugLogger(supply) << "Connected supply groups for empire " << empire_id << ":";
         for (const auto& group_set : group_sets) {
             DebugLogger(supply) << " ... " << [&]() {

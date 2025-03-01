@@ -21,12 +21,6 @@
 #include <GG/WndEvent.h>
 #include <boost/signals2/signal.hpp>
 
-
-namespace boost { namespace archive {
-    class xml_oarchive;
-    class xml_iarchive;
-} }
-
 namespace GG {
 
 class Cursor;
@@ -37,7 +31,7 @@ class Timer;
 struct GUIImpl;
 
 template <typename T>
-std::shared_ptr<T> LockAndResetIfExpired(std::weak_ptr<T>& ptr) {
+std::shared_ptr<T> LockAndResetIfExpired(std::weak_ptr<T>& ptr) noexcept {
     auto locked = ptr.lock();
     if (!locked)
         ptr.reset();
@@ -95,7 +89,7 @@ std::shared_ptr<T> LockAndResetIfExpired(std::weak_ptr<T>& ptr) {
     individual Wnd.
 
     <p>A note about "button-down-repeat".  When you click on the down-button
-    on a scroll-bar, you probably expect the the button's action (scrolling
+    on a scroll-bar, you probably expect the button's action (scrolling
     down one increment) to repeat when you hold down the button, much like the
     way kestrokes are repeated when you hold down a keyboard key.  This is in
     fact what happens, and it is accomplished by having the scroll and its
@@ -110,7 +104,7 @@ class GG_API GUI
 private:
     struct OrCombiner
     {
-        typedef bool result_type; 
+        typedef bool result_type;
         template <typename InIt> bool operator()(InIt first, InIt last) const;
     };
 
@@ -122,7 +116,7 @@ public:
 
     /// These are the only events absolutely necessary for GG to function
     /// properly
-    enum class EventType : char {
+    enum class EventType : uint8_t {
         IDLE,        ///< nothing has changed since the last message, but the GUI might want to update some things anyway
         KEYPRESS,    ///< a down key press or key repeat, with or without modifiers like Alt, Ctrl, Meta, etc.
         KEYRELEASE,  ///< a key release, with or without modifiers like Alt, Ctrl, Meta, etc.
@@ -139,11 +133,11 @@ public:
 
     /** The type of iterator returned by non-const accel_begin() and
         accel_end(). */
-    typedef std::set<std::pair<Key, Flags<ModKey>>>::iterator accel_iterator;
+    using accel_iterator = std::vector<std::pair<Key, Flags<ModKey>>>::iterator;
 
     /** The type of iterator returned by const accel_begin() and
         accel_end(). */
-    typedef std::set<std::pair<Key, Flags<ModKey>>>::const_iterator const_accel_iterator;
+    using const_accel_iterator = std::vector<std::pair<Key, Flags<ModKey>>>::const_iterator ;
 
     virtual ~GUI();
 
@@ -152,7 +146,7 @@ public:
     bool                        FocusWndAcceptsTypingInput() const; ///< returns true iff the current focus GG::Wnd accepts typing input
     std::shared_ptr<Wnd>        PrevFocusInteractiveWnd() const;    ///< returns the previous Wnd to the current FocusWnd. Cycles through INTERACTIVE Wnds, in order determined by parent-child relationships
     std::shared_ptr<Wnd>        NextFocusInteractiveWnd() const;    ///< returns the next Wnd to the current FocusWnd.
-    std::shared_ptr<Wnd>        GetWindowUnder(const Pt& pt) const; ///< returns the GG::Wnd under the point pt
+    std::shared_ptr<Wnd>        GetWindowUnder(Pt pt) const;        ///< returns the GG::Wnd under the point pt
     virtual unsigned int        Ticks() const = 0;                  ///< returns milliseconds since the app started running
     bool                        RenderingDragDropWnds() const;      ///< returns true iff drag-and-drop Wnds are currently being rendered
     bool                        FPSEnabled() const;                 ///< returns true iff FPS calulations are turned on
@@ -172,37 +166,37 @@ public:
     bool                        DragDropWnd(const Wnd* wnd) const;  ///< returns true if \a wnd is currently begin dragged as part of a drag-and-drop operation
     bool                        AcceptedDragDropWnd(const Wnd* wnd) const;  ///< returns true if \a wnd is currently begin dragged as part of a drag-and-drop operation, and it is over a drop target that will accept it
     bool                        MouseButtonDown(unsigned int bn) const;     ///< returns the up/down states of the mouse buttons
-    Pt                          MousePosition() const;              ///< returns the absolute position of mouse, based on the last mouse motion event
-    Pt                          MouseMovement() const;              ///< returns the relative position of mouse, based on the last mouse motion event
-    Flags<ModKey>               ModKeys() const;                    ///< returns the set of modifier keys that are currently depressed, based on the last event
-    bool                        MouseLRSwapped() const;             ///< returns true if the left and right mouse button press events are set to be swapped before event handling. This is to facilitate left-handed mouse users semi-automatically.
+    Pt                          MousePosition() const noexcept;     ///< returns the absolute position of mouse, based on the last mouse motion event
+    Pt                          MouseMovement() const noexcept;     ///< returns the relative position of mouse, based on the last mouse motion event
+    Flags<ModKey>               ModKeys() const noexcept;           ///< returns the set of modifier keys that are currently depressed, based on the last event
+    bool                        MouseLRSwapped() const noexcept;    ///< returns true if the left and right mouse button press events are set to be swapped before event handling. This is to facilitate left-handed mouse users semi-automatically.
     virtual std::string         ClipboardText() const;              ///< returns text stored in a clipboard
 
-    /** Returns the (begin, end) indices of the code points or char indices
-      * of the word-tokens in the given string. */
+    /** Returns the (begin, end) code point indices of the of the word-tokens in the given string. */
     std::vector<std::pair<CPSize, CPSize>>   FindWords(std::string_view str) const;
+    /** Returns the (begin, end) string indices of the of the word-tokens in the given string. */
     std::vector<std::pair<StrSize, StrSize>> FindWordsStringIndices(std::string_view str) const;
     std::vector<std::string_view>            FindWordsStringViews(std::string_view str) const;
 
     /** Returns the currently-installed style factory. */
-    const std::shared_ptr<StyleFactory>&    GetStyleFactory() const;
+    const StyleFactory&                     GetStyleFactory() const noexcept;
 
     bool                                    RenderCursor() const; ///< returns true iff the GUI is responsible for rendering the cursor
 
     /* Returns the currently-installed cursor. */
-    const std::shared_ptr<Cursor>&          GetCursor() const;
+    const Cursor&                           GetCursor() const noexcept;
 
     /** Returns an iterator to one past the first defined keyboard accelerator. */
-    const_accel_iterator                    accel_begin() const;
+    const_accel_iterator                    accel_begin() const noexcept;
 
     /** Returns an iterator to one past the last defined keyboard accelerator. */
-    const_accel_iterator                    accel_end() const;
+    const_accel_iterator                    accel_end() const noexcept;
 
     /** Returns the signal that is emitted when the requested keyboard accelerator is invoked. */
     AcceleratorSignalType&                  AcceleratorSignal(Key key, Flags<ModKey> mod_keys = MOD_KEY_NONE) const;
 
     /** Returns true iff keyboard accelerator signals fire while modal windows are open. */
-    bool                                    ModalAcceleratorSignalsEnabled() const;
+    bool                                    ModalAcceleratorSignalsEnabled() const noexcept;
 
     /** Returns true iff any modal Wnds are open. */
     bool                                    ModalWndsOpen() const;
@@ -223,8 +217,9 @@ public:
     virtual void    HandleSystemEvents() = 0;
 
     /** Event handler for GG events. */
-    void            HandleGGEvent(EventType event, Key key, std::uint32_t key_code_point, Flags<ModKey> mod_keys,
-                                  const Pt& pos, const Pt& rel, std::string text = std::string());
+    void            HandleGGEvent(EventType event, Key key, uint32_t key_code_point,
+                                  Flags<ModKey> mod_keys, Pt pos, Pt rel,
+                                  std::string text = std::string());
 
     void            ClearEventState();
 
@@ -240,7 +235,8 @@ public:
     /** Adds \p wnd onto the modal windows "stack".  Modal windows are owned by the GUI as a
         top-level window. */
     void            RegisterModal(std::shared_ptr<Wnd> wnd);
-    void            RunModal(std::shared_ptr<Wnd> wnd, bool& done);
+    void            RunModal(const bool& done);
+    void            RunModal(std::shared_ptr<Wnd> wnd);
     void            Remove(const std::shared_ptr<Wnd>& wnd);               ///< removes \a wnd from the z-list.  Removing a null pointer or removing the same window multiple times is a no-op.
     void            MoveUp(const std::shared_ptr<Wnd>& wnd);               ///< moves \a wnd to the top of the z-list
     void            MoveDown(const std::shared_ptr<Wnd>& wnd);             ///< moves \a wnd to the bottom of the z-list
@@ -251,7 +247,8 @@ public:
         \throw std::runtime_error May throw std::runtime_error if there are
         already other Wnds registered that belong to a window other than \a
         originating_wnd. */
-    void           RegisterDragDropWnd(std::shared_ptr<Wnd> wnd, const Pt& offset, std::shared_ptr<Wnd> originating_wnd);
+    void           RegisterDragDropWnd(std::shared_ptr<Wnd> wnd, Pt offset,
+                                       std::shared_ptr<Wnd> originating_wnd);
     void           CancelDragDrop();             ///< clears the set of current drag-and-drop Wnds
 
     void           RegisterTimer(Timer& timer);  ///< adds \a timer to the list of active timers
@@ -292,25 +289,25 @@ public:
 
     /** Returns a shared_ptr to the desired font, supporting all printable
         ASCII characters. */
-    std::shared_ptr<Font> GetFont(const std::string& font_filename, unsigned int pts);
+    std::shared_ptr<Font> GetFont(std::string_view font_filename, unsigned int pts);
 
     /** Returns a shared_ptr to the desired font, supporting all printable
         ASCII characters, from the in-memory contents \a file_contents. */
-    std::shared_ptr<Font> GetFont(const std::string& font_filename, unsigned int pts,
-                                  const std::vector<unsigned char>& file_contents);
+    std::shared_ptr<Font> GetFont(std::string_view font_filename, unsigned int pts,
+                                  const std::vector<uint8_t>& file_contents);
 
     /** Returns a shared_ptr to the desired font, supporting all the
         characters in the UnicodeCharsets in the range [first, last). */
     template <typename CharSetIter>
-    std::shared_ptr<Font> GetFont(const std::string& font_filename, unsigned int pts,
+    std::shared_ptr<Font> GetFont(std::string_view font_filename, unsigned int pts,
                                   CharSetIter first, CharSetIter last);
 
     /** Returns a shared_ptr to the desired font, supporting all the
         characters in the UnicodeCharsets in the range [first, last), from the
         in-memory contents \a file_contents. */
     template <typename CharSetIter>
-    std::shared_ptr<Font> GetFont(const std::string& font_filename, unsigned int pts,
-                                  const std::vector<unsigned char>& file_contents,
+    std::shared_ptr<Font> GetFont(std::string_view font_filename, unsigned int pts,
+                                  const std::vector<uint8_t>& file_contents,
                                   CharSetIter first, CharSetIter last);
 
     /** Returns a shared_ptr to existing font \a font in a new size, \a pts. */
@@ -318,7 +315,7 @@ public:
 
     /** Removes the desired font from the managed pool; since shared_ptr's are
         used, the font may be deleted much later. */
-    void                       FreeFont(const std::string& font_filename, unsigned int pts);
+    void FreeFont(std::string_view font_filename, unsigned int pts);
 
     /** Adds an already-constructed texture to the managed pool \warning
         calling code <b>must not</b> delete \a texture; the texture pool will
@@ -326,31 +323,24 @@ public:
     std::shared_ptr<Texture> StoreTexture(Texture* texture, const std::string& texture_name);
 
     /** Adds an already-constructed texture to the managed pool. */
-    std::shared_ptr<Texture> StoreTexture(const std::shared_ptr<Texture> &texture, const std::string& texture_name);
-
-    /** Loads the requested texture from file \a name; mipmap textures are
-      * generated if \a mipmap is true. */
-    std::shared_ptr<Texture> GetTexture(const std::string& name, bool mipmap = false);
+    std::shared_ptr<Texture> StoreTexture(const std::shared_ptr<Texture>& texture,
+                                          const std::string& texture_name);
 
     /** Loads the requested texture from file \a name; mipmap textures are
       * generated if \a mipmap is true. */
     std::shared_ptr<Texture> GetTexture(const boost::filesystem::path& path, bool mipmap = false);
 
-    /** Removes the desired texture from the managed pool; since shared_ptr's
+    /** Removes the desired texture from the managed pool; since shared_ptr
       * are used, the texture may be deleted much later. */
-    void                       FreeTexture(const std::string& name);
-
-    /** Removes the desired texture from the managed pool; since shared_ptr's
-      * are used, the texture may be deleted much later. */
-    void                       FreeTexture(const boost::filesystem::path& path);
+    void FreeTexture(const boost::filesystem::path& path);
 
     /** Sets the currently-installed style factory. */
-    void SetStyleFactory(const std::shared_ptr<StyleFactory>& factory);
+    void SetStyleFactory(std::unique_ptr<StyleFactory>&& factory) noexcept;
 
-    void RenderCursor(bool render); ///< set this to true iff the GUI should render the cursor
+    void RenderCursor(bool render) noexcept; ///< set this to true iff the GUI should render the cursor
 
     /** Sets the currently-installed cursor. */
-    void SetCursor(const std::shared_ptr<Cursor>& cursor);
+    void SetCursor(std::unique_ptr<Cursor>&& cursor) noexcept;
 
     virtual bool SetClipboardText(std::string text);        ///< sets text stored in clipboard
     bool CopyFocusWndText();                                ///< copies current focus Wnd as text to clipboard
@@ -368,7 +358,7 @@ public:
     bool SetPrevFocusWndInCycle();                          ///< sets the focus Wnd to the next INTERACTIVE Wnd in a cycle determined by Wnd parent-child relationships
     bool SetNextFocusWndInCycle();                          ///< sets the focus Wnd to the next in the cycle.
 
-    static GUI*  GetGUI();                  ///< allows any GG code access to GUI framework by calling GUI::GetGUI()
+    static GUI*  GetGUI() noexcept;                         ///< allows any GG code access to GUI framework by calling GUI::GetGUI()
 
     /** If \p wnd is visible recursively call PreRenderWindow() on all \p wnd's children and then
         call \p wnd->PreRender().  The order guarantees that when wnd->PreRender() is called all
@@ -433,7 +423,7 @@ private:
 
     // Returns the window under \a pt, sending Mouse{Enter|Leave} or
     // DragDrop{Enter|Leave} as appropriate
-    std::shared_ptr<Wnd> CheckedGetWindowUnder(const Pt& pt, Flags<ModKey> mod_keys);
+    std::shared_ptr<Wnd> CheckedGetWindowUnder(Pt pt, Flags<ModKey> mod_keys);
 
     static GUI*              s_gui;
     std::unique_ptr<GUIImpl> m_impl;
@@ -455,22 +445,24 @@ GG_API Flags<ModKey> MassagedAccelModKeys(Flags<ModKey> mod_keys);
 
 
 template <typename InIt>
-bool GUI::OrCombiner::operator()(InIt first, InIt last) const
+bool GUI::OrCombiner::operator()(InIt first, const InIt last) const
 {
-    bool retval = false;
-    while (first != last)
-        retval |= static_cast<bool>(*first++);
-    return retval;
+    static constexpr bool scb_nx = noexcept(static_cast<bool>(*first));
+    return std::any_of(first, last, [](const auto& x) noexcept(scb_nx) { return static_cast<bool>(x); });
+    //bool retval = false;
+    //while (first != last)
+    //    retval |= static_cast<bool>(*first++);
+    //return retval;
 }
 
 template <typename CharSetIter>
-std::shared_ptr<Font> GUI::GetFont(const std::string& font_filename, unsigned int pts,
+std::shared_ptr<Font> GUI::GetFont(std::string_view font_filename, unsigned int pts,
                                    CharSetIter first, CharSetIter last)
 { return GetFontManager().GetFont(font_filename, pts, first, last); }
 
 template <typename CharSetIter>
-std::shared_ptr<Font> GUI::GetFont(const std::string& font_filename, unsigned int pts,
-                                   const std::vector<unsigned char>& file_contents,
+std::shared_ptr<Font> GUI::GetFont(std::string_view font_filename, unsigned int pts,
+                                   const std::vector<uint8_t>& file_contents,
                                    CharSetIter first, CharSetIter last)
 { return GetFontManager().GetFont(font_filename, pts, file_contents, first, last); }
 

@@ -51,7 +51,7 @@ constexpr auto NUM_PATH_TYPES = std::size_t(PathType::PATH_INVALID);
 FO_COMMON_API auto PathTypes() -> std::array<PathType, NUM_PATH_TYPES>;
 
 //! Returns an array of string_views for all valid PathTypes
-FO_COMMON_API auto PathTypeStrings() -> const std::array<std::string_view, NUM_PATH_TYPES>&;
+FO_COMMON_API auto PathTypeStrings() noexcept -> const std::array<std::string_view, NUM_PATH_TYPES>&;
 
 //! Migrates outstating user configuration and data to a XDG Base Diretory spec
 //! compliant directory.
@@ -68,7 +68,7 @@ FO_COMMON_API void CompleteXDGMigration();
 //! specified location by updating the save.path option to the new location
 //! after the option is loaded from XML files.  It only updates the option
 //! if it is set to the old default option.
-FO_COMMON_API void InitDirs(std::string const& argv0);
+FO_COMMON_API void InitDirs(std::string const& argv0, bool test = false);
 
 //! Returns the directory where FreeOrion store user configurations.
 //!

@@ -1,14 +1,15 @@
-from common.base_prod import TECH_COST_MULTIPLIER
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER
 
 Tech(
     name="GRO_BIOTERROR",
     description="GRO_BIOTERROR_DESC",
     short_description="BUILDING_UNLOCK_SHORT_DESC",
     category="GROWTH_CATEGORY",
-    researchcost=50 * TECH_COST_MULTIPLIER,
+    researchcost=80 * TECH_COST_MULTIPLIER,
     researchturns=5,
     tags=["PEDIA_GROWTH_CATEGORY"],
-    prerequisites="GRO_NANOTECH_MED",
-    unlock=Item(type=Building, name="BLD_BIOTERROR_PROJECTOR"),
+    prerequisites=["GRO_NANOTECH_MED"],
+    unlock=Item(type=UnlockBuilding, name="BLD_BIOTERROR_PROJECTOR"),
     graphic="icons/tech/bioterror_facilities.png",
 )

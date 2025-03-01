@@ -7,7 +7,6 @@
 #include "Ship.h"
 #include "Species.h"
 #include "System.h"
-#include "UniverseObjectVisitor.h"
 #include "Universe.h"
 #include "ValueRef.h"
 #include "../Empire/EmpireManager.h"
@@ -23,8 +22,9 @@
 namespace {
     // high tilt is arbitrarily taken to mean 45 degrees or more
     constexpr float HIGH_TILT_THERESHOLD = 45.0f;
+    constexpr double MINIMUM_POP_CENTER_POPULATION = 0.01001;  // rounds up to 0.1 when showing 2 digits, down to 0.05 or 50.0 when showing 3
 
-    float SizeRotationFactor(PlanetSize size) {
+    constexpr float SizeRotationFactor(PlanetSize size) noexcept {
         switch (size) {
         case PlanetSize::SZ_TINY:     return 1.5f;
         case PlanetSize::SZ_SMALL:    return 1.25f;
@@ -36,12 +36,15 @@ namespace {
         }
     }
 
-    static const std::string EMPTY_STRING;
+#if defined(__cpp_lib_constexpr_string) && ((!defined(__GNUC__) || (__GNUC__ > 12) || (__GNUC__ == 12 && __GNUC_MINOR__ >= 2))) && ((!defined(_MSC_VER) || (_MSC_VER >= 1934))) && ((!defined(__clang_major__) || (__clang_major__ >= 17)))
+    constexpr std::string EMPTY_STRING;
+#else
+    const std::string EMPTY_STRING;
+#endif
 
-    /** @content_tag{CTRL_STAT_SKIP_DEPOP} Do not count PopCenter%s with this tag for SpeciesPlanetsDepoped stat */
-    const std::string TAG_STAT_SKIP_DEPOP = "CTRL_STAT_SKIP_DEPOP";
+    /** @content_tag{CTRL_STAT_SKIP_DEPOP} Do not count Planets with this tag for SpeciesPlanetsDepoped stat */
+    constexpr std::string_view TAG_STAT_SKIP_DEPOP = "CTRL_STAT_SKIP_DEPOP";
 }
-
 
 ////////////////////////////////////////////////////////////
 // Planet
@@ -55,10 +58,7 @@ Planet::Planet(PlanetType type, PlanetSize size, int creation_turn) :
     m_axial_tilt(RandZeroToOne() * HIGH_TILT_THERESHOLD)
 {
     //DebugLogger() << "Planet::Planet(" << type << ", " << size <<")";
-    UniverseObject::Init();
-    PopCenter::Init();
-    ResourceCenter::Init();
-    Planet::Init();
+    AddMeters(planet_meter_types);
 
     static constexpr double SPIN_STD_DEV = 0.1;
     static constexpr double REVERSE_SPIN_CHANCE = 0.06;
@@ -67,63 +67,80 @@ Planet::Planet(PlanetType type, PlanetSize size, int creation_turn) :
         m_rotational_period = -m_rotational_period;
 }
 
-Planet* Planet::Clone(const Universe& universe, int empire_id) const {
-    Visibility vis = universe.GetObjectVisibilityByEmpire(this->ID(), empire_id);
+std::shared_ptr<UniverseObject> Planet::Clone(const Universe& universe, int empire_id) const {
+    const Visibility vis = empire_id == ALL_EMPIRES ?
+        Visibility::VIS_FULL_VISIBILITY : universe.GetObjectVisibilityByEmpire(this->ID(), empire_id);
 
     if (!(vis >= Visibility::VIS_BASIC_VISIBILITY && vis <= Visibility::VIS_FULL_VISIBILITY))
         return nullptr;
 
-    auto retval = std::make_unique<Planet>();
-    retval->Copy(UniverseObject::shared_from_this(), universe, empire_id);
-    return retval.release();
+    auto retval = std::make_shared<Planet>();
+    retval->Copy(*this, universe, empire_id);
+    return retval;
 }
 
-void Planet::Copy(std::shared_ptr<const UniverseObject> copied_object,
-                  const Universe& universe, int empire_id)
-{
-    if (copied_object.get() == this)
+void Planet::Copy(const UniverseObject& copied_object, const Universe& universe, int empire_id) {
+    if (&copied_object == this)
         return;
-    auto copied_planet = std::dynamic_pointer_cast<const Planet>(copied_object);
-    if (!copied_planet) {
+
+    if (copied_object.ObjectType() != UniverseObjectType::OBJ_PLANET) {
         ErrorLogger() << "Planet::Copy passed an object that wasn't a Planet";
         return;
     }
 
-    int copied_object_id = copied_object->ID();
-    Visibility vis = universe.GetObjectVisibilityByEmpire(copied_object_id, empire_id);
-    auto visible_specials = universe.GetObjectVisibleSpecialsByEmpire(copied_object_id, empire_id);
+    Copy(static_cast<const Planet&>(copied_object), universe, empire_id);
+}
 
-    UniverseObject::Copy(std::move(copied_object), vis, visible_specials, universe);
-    PopCenter::Copy(copied_planet, vis);
-    ResourceCenter::Copy(copied_planet, vis);
+void Planet::Copy(const Planet& copied_planet, const Universe& universe, int empire_id) {
+    if (&copied_planet == this)
+        return;
+
+    const int copied_object_id = copied_planet.ID();
+    const Visibility vis = empire_id == ALL_EMPIRES ?
+        Visibility::VIS_FULL_VISIBILITY : universe.GetObjectVisibilityByEmpire(copied_object_id, empire_id);
+    const auto visible_specials = universe.GetObjectVisibleSpecialsByEmpire(copied_object_id, empire_id);
+
+    UniverseObject::Copy(copied_planet, vis, visible_specials, universe);
 
     if (vis >= Visibility::VIS_BASIC_VISIBILITY) {
-        this->m_name =                      copied_planet->m_name;
+        this->m_name =                      copied_planet.m_name;
 
-        this->m_buildings =                 copied_planet->VisibleContainedObjectIDs(empire_id, universe.GetEmpireObjectVisibility());
-        this->m_type =                      copied_planet->m_type;
-        this->m_original_type =             copied_planet->m_original_type;
-        this->m_size =                      copied_planet->m_size;
-        this->m_orbital_period =            copied_planet->m_orbital_period;
-        this->m_initial_orbital_position =  copied_planet->m_initial_orbital_position;
-        this->m_rotational_period =         copied_planet->m_rotational_period;
-        this->m_axial_tilt =                copied_planet->m_axial_tilt;
-        this->m_turn_last_conquered =       copied_planet->m_turn_last_conquered;
-        this->m_turn_last_colonized =       copied_planet->m_turn_last_colonized;
-
+        this->m_buildings =                 copied_planet.VisibleContainedObjectIDs(empire_id, universe.GetEmpireObjectVisibility());
+        this->m_type =                      copied_planet.m_type;
+        this->m_original_type =             copied_planet.m_original_type;
+        this->m_size =                      copied_planet.m_size;
+        this->m_orbital_period =            copied_planet.m_orbital_period;
+        this->m_initial_orbital_position =  copied_planet.m_initial_orbital_position;
+        this->m_rotational_period =         copied_planet.m_rotational_period;
+        this->m_axial_tilt =                copied_planet.m_axial_tilt;
+        this->m_turn_last_conquered =       copied_planet.m_turn_last_conquered;
+        this->m_turn_last_colonized =       copied_planet.m_turn_last_colonized;
+        this->m_turn_last_annexed =         copied_planet.m_turn_last_annexed;
 
         if (vis >= Visibility::VIS_PARTIAL_VISIBILITY) {
+            this->m_species_name =                          copied_planet.m_species_name;
+            this->m_focus =                                 copied_planet.m_focus;
+            this->m_last_turn_focus_changed =               copied_planet.m_last_turn_focus_changed;
+            this->m_focus_turn_initial =                    copied_planet.m_focus_turn_initial;
+            this->m_last_turn_focus_changed_turn_initial =  copied_planet.m_last_turn_focus_changed_turn_initial;
+            this->m_last_turn_attacked_by_ship =            copied_planet.m_last_turn_attacked_by_ship;
+            this->m_ordered_annexed_by_empire_id =          copied_planet.m_ordered_annexed_by_empire_id;
+            this->m_is_about_to_be_colonized =              copied_planet.m_is_about_to_be_colonized;
+            this->m_is_about_to_be_invaded =                copied_planet.m_is_about_to_be_invaded;
+            this->m_is_about_to_be_bombarded =              copied_planet.m_is_about_to_be_bombarded;
+            this->m_owner_before_last_conquered =           copied_planet.m_owner_before_last_conquered;
+            this->m_last_invaded_by_empire_id =             copied_planet.m_last_invaded_by_empire_id;
+            this->m_last_colonized_by_empire_id =           copied_planet.m_last_colonized_by_empire_id;
+            this->m_last_annexed_by_empire_id =             copied_planet.m_last_annexed_by_empire_id;
+
             if (vis >= Visibility::VIS_FULL_VISIBILITY) {
-                this->m_is_about_to_be_colonized =  copied_planet->m_is_about_to_be_colonized;
-                this->m_is_about_to_be_invaded   =  copied_planet->m_is_about_to_be_invaded;
-                this->m_is_about_to_be_bombarded =  copied_planet->m_is_about_to_be_bombarded;
-                this->m_ordered_given_to_empire_id =copied_planet->m_ordered_given_to_empire_id;
-                this->m_last_turn_attacked_by_ship= copied_planet->m_last_turn_attacked_by_ship;
+                this->m_ordered_given_to_empire_id = copied_planet.m_ordered_given_to_empire_id;
+
             } else {
                 // copy system name if at partial visibility, as it won't be copied
                 // by UniverseObject::Copy unless at full visibility, but players
                 // should know planet names even if they don't own the planet
-                m_name = copied_planet->Name();
+                m_name = copied_planet.Name();
             }
         }
     }
@@ -138,7 +155,7 @@ bool Planet::HostileToEmpire(int empire_id, const EmpireManager& empires) const 
         return !Unowned();
 
     // Unowned planets are only considered hostile if populated
-    auto pop_meter = GetMeter(MeterType::METER_TARGET_POPULATION);
+    auto pop_meter = UniverseObject::GetMeter(MeterType::METER_TARGET_POPULATION);
     if (Unowned())
         return pop_meter && (pop_meter->Current() != 0.0f);
 
@@ -147,9 +164,8 @@ bool Planet::HostileToEmpire(int empire_id, const EmpireManager& empires) const 
 }
 
 UniverseObject::TagVecs Planet::Tags(const ScriptingContext& context) const {
-    if (const Species* species = context.species.GetSpecies(SpeciesName()))
-        return species->Tags();
-    return {};
+    const Species* species = context.species.GetSpecies(SpeciesName());
+    return species ? TagVecs{species->Tags()} : TagVecs{};
 }
 
 bool Planet::HasTag(std::string_view name, const ScriptingContext& context) const {
@@ -157,11 +173,12 @@ bool Planet::HasTag(std::string_view name, const ScriptingContext& context) cons
     return species && species->HasTag(name);
 }
 
-std::string Planet::Dump(unsigned short ntabs) const {
+std::string Planet::Dump(uint8_t ntabs) const {
     std::string retval = UniverseObject::Dump(ntabs);
     retval.reserve(2048);
-    retval += PopCenter::Dump(ntabs);
-    retval += ResourceCenter::Dump(ntabs);
+    retval.append(" species: ").append(m_species_name).append("  ");
+    retval.append(" focus: ").append(m_focus).append(" last changed on turn: ")
+          .append(std::to_string(m_last_turn_focus_changed));
     retval.append(" type: ").append(to_string(m_type))
           .append(" original type: ").append(to_string(m_original_type))
           .append(" size: ").append(to_string(m_size))
@@ -173,61 +190,67 @@ std::string Planet::Dump(unsigned short ntabs) const {
         ++it;
         retval.append(std::to_string(building_id)).append(it == m_buildings.end() ? "" : ", ");
     }
+    if (m_ordered_annexed_by_empire_id != ALL_EMPIRES)
+        retval.append(" (About to be Annexed by ").append(std::to_string(m_ordered_annexed_by_empire_id)).append(")");
     if (m_is_about_to_be_colonized)
         retval.append(" (About to be Colonized)");
     if (m_is_about_to_be_invaded)
         retval.append(" (About to be Invaded)");
 
-    retval.append(" colonized on turn: ").append(std::to_string(m_turn_last_colonized))
-          .append(" conquered on turn: ").append(std::to_string(m_turn_last_conquered));
+    retval.append(" annexed on turn: ").append(std::to_string(m_turn_last_annexed))
+          .append(" colonized on turn: ").append(std::to_string(m_turn_last_colonized))
+          .append(" conquered on turn: ").append(std::to_string(m_turn_last_conquered))
+          .append(" owner before being conquered: ").append(std::to_string(m_owner_before_last_conquered))
+          .append(" last invaded by: ").append(std::to_string(m_last_invaded_by_empire_id))
+          .append(" last colonized by: ").append(std::to_string(m_last_colonized_by_empire_id))
+          .append(" last annexed by: ").append(std::to_string(m_last_annexed_by_empire_id));
+
     if (m_is_about_to_be_bombarded)
         retval.append(" (About to be Bombarded)");
+
     if (m_ordered_given_to_empire_id != ALL_EMPIRES)
         retval.append(" (Ordered to be given to empire with id: ")
               .append(std::to_string(m_ordered_given_to_empire_id)).append(")");
+
     retval.append(" last attacked on turn: ").append(std::to_string(m_last_turn_attacked_by_ship));
 
     return retval;
 }
 
+bool Planet::Populated() const noexcept
+{ return UniverseObject::GetMeter(MeterType::METER_POPULATION)->Current() >= MINIMUM_POP_CENTER_POPULATION; }
+
 int Planet::HabitableSize() const {
     auto& gr = GetGameRules();
     switch (m_size) {
-    case PlanetSize::SZ_GASGIANT:  return gr.Get<int>("RULE_HABITABLE_SIZE_GASGIANT");   break;
-    case PlanetSize::SZ_HUGE:      return gr.Get<int>("RULE_HABITABLE_SIZE_HUGE");   break;
-    case PlanetSize::SZ_LARGE:     return gr.Get<int>("RULE_HABITABLE_SIZE_LARGE");   break;
-    case PlanetSize::SZ_MEDIUM:    return gr.Get<int>("RULE_HABITABLE_SIZE_MEDIUM");   break;
-    case PlanetSize::SZ_ASTEROIDS: return gr.Get<int>("RULE_HABITABLE_SIZE_ASTEROIDS");   break;
-    case PlanetSize::SZ_SMALL:     return gr.Get<int>("RULE_HABITABLE_SIZE_SMALL");   break;
-    case PlanetSize::SZ_TINY:      return gr.Get<int>("RULE_HABITABLE_SIZE_TINY");   break;
-    default:                       return 0;   break;
+    case PlanetSize::SZ_GASGIANT:  return gr.Get<int>("RULE_HABITABLE_SIZE_GASGIANT");  break;
+    case PlanetSize::SZ_HUGE:      return gr.Get<int>("RULE_HABITABLE_SIZE_HUGE");      break;
+    case PlanetSize::SZ_LARGE:     return gr.Get<int>("RULE_HABITABLE_SIZE_LARGE");     break;
+    case PlanetSize::SZ_MEDIUM:    return gr.Get<int>("RULE_HABITABLE_SIZE_MEDIUM");    break;
+    case PlanetSize::SZ_ASTEROIDS: return gr.Get<int>("RULE_HABITABLE_SIZE_ASTEROIDS"); break;
+    case PlanetSize::SZ_SMALL:     return gr.Get<int>("RULE_HABITABLE_SIZE_SMALL");     break;
+    case PlanetSize::SZ_TINY:      return gr.Get<int>("RULE_HABITABLE_SIZE_TINY");      break;
+    default:                       return 0;                                            break;
     }
 }
 
-void Planet::Init() {
-    AddMeter(MeterType::METER_SUPPLY);
-    AddMeter(MeterType::METER_MAX_SUPPLY);
-    AddMeter(MeterType::METER_STOCKPILE);
-    AddMeter(MeterType::METER_MAX_STOCKPILE);
-    AddMeter(MeterType::METER_SHIELD);
-    AddMeter(MeterType::METER_MAX_SHIELD);
-    AddMeter(MeterType::METER_DEFENSE);
-    AddMeter(MeterType::METER_MAX_DEFENSE);
-    AddMeter(MeterType::METER_TROOPS);
-    AddMeter(MeterType::METER_MAX_TROOPS);
-    AddMeter(MeterType::METER_DETECTION);
-    AddMeter(MeterType::METER_REBEL_TROOPS);
+int Planet::TurnsSinceFocusChange(int current_turn) const noexcept {
+    if (m_last_turn_focus_changed == INVALID_GAME_TURN)
+        return current_turn - BEFORE_FIRST_TURN;
+    if (current_turn == INVALID_GAME_TURN)
+        return current_turn - BEFORE_FIRST_TURN;
+    return current_turn - m_last_turn_focus_changed;
 }
 
-PlanetEnvironment Planet::EnvironmentForSpecies(const std::string& species_name) const {
+PlanetEnvironment Planet::EnvironmentForSpecies(const SpeciesManager& sm, std::string_view species_name) const {
     const Species* species = nullptr;
     if (species_name.empty()) {
-        const std::string& this_planet_species_name = this->SpeciesName();
+        auto& this_planet_species_name = this->SpeciesName();
         if (this_planet_species_name.empty())
             return PlanetEnvironment::PE_UNINHABITABLE;
-        species = GetSpecies(this_planet_species_name);
+        species = sm.GetSpecies(this_planet_species_name);
     } else {
-        species = GetSpecies(species_name);
+        species = sm.GetSpecies(species_name);
     }
     if (!species) {
         ErrorLogger() << "Planet::EnvironmentForSpecies couldn't get species with name \"" << species_name << "\"";
@@ -236,15 +259,17 @@ PlanetEnvironment Planet::EnvironmentForSpecies(const std::string& species_name)
     return species->GetPlanetEnvironment(m_type);
 }
 
-PlanetType Planet::NextBestPlanetTypeForSpecies(const std::string& species_name) const {
+PlanetType Planet::NextBestPlanetTypeForSpecies(const ScriptingContext& context,
+                                                const std::string& species_name) const
+{
     const Species* species = nullptr;
     if (species_name.empty()) {
         const std::string& this_planet_species_name = this->SpeciesName();
         if (this_planet_species_name.empty())
             return m_type;
-        species = GetSpecies(this_planet_species_name);
+        species = context.species.GetSpecies(this_planet_species_name);
     } else {
-        species = GetSpecies(species_name);
+        species = context.species.GetSpecies(species_name);
     }
     if (!species) {
         ErrorLogger() << "Planet::NextBestPlanetTypeForSpecies couldn't get species with name \"" << species_name << "\"";
@@ -253,15 +278,17 @@ PlanetType Planet::NextBestPlanetTypeForSpecies(const std::string& species_name)
     return species->NextBestPlanetType(m_type);
 }
 
-PlanetType Planet::NextBetterPlanetTypeForSpecies(const std::string& species_name) const {
+PlanetType Planet::NextBetterPlanetTypeForSpecies(const ScriptingContext& context,
+                                                  const std::string& species_name) const
+{
     const Species* species = nullptr;
     if (species_name.empty()) {
         const std::string& this_planet_species_name = this->SpeciesName();
         if (this_planet_species_name.empty())
             return m_type;
-        species = GetSpecies(this_planet_species_name);
+        species = context.species.GetSpecies(this_planet_species_name);
     } else {
-        species = GetSpecies(species_name);
+        species = context.species.GetSpecies(species_name);
     }
     if (!species) {
         ErrorLogger() << "Planet::NextBetterPlanetTypeForSpecies couldn't get species with name \"" << species_name << "\"";
@@ -271,58 +298,100 @@ PlanetType Planet::NextBetterPlanetTypeForSpecies(const std::string& species_nam
 }
 
 namespace {
-    PlanetType RingNextPlanetType(PlanetType current_type) {
-        PlanetType next(PlanetType(int(current_type)+1));
-        if (next >= PlanetType::PT_ASTEROIDS)
-            next = PlanetType::PT_SWAMP;
-        return next;
+    constexpr PlanetType RingNextPlanetType(PlanetType current_type) noexcept {
+        switch (current_type) {
+        case PlanetType::INVALID_PLANET_TYPE:
+        case PlanetType::PT_ASTEROIDS:
+        case PlanetType::PT_GASGIANT:
+        case PlanetType::NUM_PLANET_TYPES:
+            return current_type; break;
+        case PlanetType::PT_OCEAN: return PlanetType::PT_SWAMP; break;
+        default: return PlanetType(int(current_type)+1);
+        }
     }
-    PlanetType RingPreviousPlanetType(PlanetType current_type) {
-        PlanetType next(PlanetType(int(current_type)-1));
-        if (next <= PlanetType::INVALID_PLANET_TYPE)
-            next = PlanetType::PT_OCEAN;
-        return next;
+    constexpr PlanetType RingPreviousPlanetType(PlanetType current_type) noexcept {
+        switch (current_type) {
+        case PlanetType::INVALID_PLANET_TYPE:
+        case PlanetType::PT_ASTEROIDS:
+        case PlanetType::PT_GASGIANT:
+        case PlanetType::NUM_PLANET_TYPES:
+            return current_type; break;
+        case PlanetType::PT_SWAMP: return PlanetType::PT_OCEAN; break;
+        default: return PlanetType(int(current_type)-1);
+        }
     }
+    static_assert(RingNextPlanetType(PlanetType::INVALID_PLANET_TYPE) == PlanetType::INVALID_PLANET_TYPE);
+    static_assert(RingNextPlanetType(PlanetType::PT_ASTEROIDS) == PlanetType::PT_ASTEROIDS);
+    static_assert(RingNextPlanetType(PlanetType::PT_SWAMP) == PlanetType::PT_TOXIC);
+    static_assert(RingNextPlanetType(PlanetType::PT_OCEAN) == PlanetType::PT_SWAMP);
+    static_assert(RingPreviousPlanetType(PlanetType::INVALID_PLANET_TYPE) == PlanetType::INVALID_PLANET_TYPE);
+    static_assert(RingPreviousPlanetType(PlanetType::PT_GASGIANT) == PlanetType::PT_GASGIANT);
+    static_assert(RingPreviousPlanetType(PlanetType::PT_SWAMP) == PlanetType::PT_OCEAN);
+    static_assert(RingPreviousPlanetType(PlanetType::PT_OCEAN) == PlanetType::PT_TERRAN);
+
+    constexpr PlanetType NextCloserTo(PlanetType from, PlanetType towards) noexcept {
+        switch (from) {
+        case PlanetType::INVALID_PLANET_TYPE:
+        case PlanetType::PT_ASTEROIDS:
+        case PlanetType::PT_GASGIANT:
+        case PlanetType::NUM_PLANET_TYPES:
+            return from;
+            break;
+        default:
+            break;
+        }
+        switch (towards) {
+        case PlanetType::INVALID_PLANET_TYPE:
+        case PlanetType::PT_ASTEROIDS:
+        case PlanetType::PT_GASGIANT:
+        case PlanetType::NUM_PLANET_TYPES:
+            return from;
+            break;
+        default:
+            break;
+        }
+
+        if (from == towards)
+            return from;
+
+        const int cw_steps = [towards, cur_type{from}]() mutable noexcept {
+            int cw_steps = 0;
+            while (cur_type != towards) {
+                cw_steps++;
+                cur_type = RingNextPlanetType(cur_type);
+            }
+            return cw_steps;
+        }();
+
+        const int ccw_steps = [towards, cur_type{from}]() mutable noexcept {
+            int ccw_steps = 0;
+            while (cur_type != towards) {
+                ccw_steps++;
+                cur_type = RingPreviousPlanetType(cur_type);
+            }
+            return ccw_steps;
+        }();
+
+        return (cw_steps <= ccw_steps) ? RingNextPlanetType(from) : RingPreviousPlanetType(from);
+    }
+    static_assert(NextCloserTo(PlanetType::INVALID_PLANET_TYPE, PlanetType::PT_OCEAN) == PlanetType::INVALID_PLANET_TYPE);
+    static_assert(NextCloserTo(PlanetType::PT_OCEAN, PlanetType::PT_GASGIANT) == PlanetType::PT_OCEAN);
+    static_assert(NextCloserTo(PlanetType::PT_OCEAN, PlanetType::PT_OCEAN) == PlanetType::PT_OCEAN);
+    static_assert(NextCloserTo(PlanetType::PT_OCEAN, PlanetType::PT_TOXIC) == PlanetType::PT_SWAMP);
+    static_assert(NextCloserTo(PlanetType::PT_SWAMP, PlanetType::PT_TOXIC) == PlanetType::PT_TOXIC);
+    static_assert(NextCloserTo(PlanetType::PT_INFERNO, PlanetType::PT_OCEAN) == PlanetType::PT_TOXIC);
+    static_assert(NextCloserTo(PlanetType::PT_INFERNO, PlanetType::PT_DESERT) == PlanetType::PT_RADIATED);
 }
 
-PlanetType Planet::NextCloserToOriginalPlanetType() const {
-    if (m_type == PlanetType::INVALID_PLANET_TYPE ||
-        m_type == PlanetType::PT_GASGIANT ||
-        m_type == PlanetType::PT_ASTEROIDS ||
-        m_original_type == PlanetType::INVALID_PLANET_TYPE ||
-        m_original_type == PlanetType::PT_GASGIANT ||
-        m_original_type == PlanetType::PT_ASTEROIDS)
-    { return m_type; }
-
-    if (m_type == m_original_type)
-        return m_type;
-
-    PlanetType cur_type = m_type;
-    int cw_steps = 0;
-    while (cur_type != m_original_type) {
-        cw_steps++;
-        cur_type = RingNextPlanetType(cur_type);
-    }
-
-    cur_type = m_type;
-    int ccw_steps = 0;
-    while (cur_type != m_original_type) {
-        ccw_steps++;
-        cur_type = RingPreviousPlanetType(cur_type);
-    }
-
-    if (cw_steps <= ccw_steps)
-        return RingNextPlanetType(m_type);
-    return RingPreviousPlanetType(m_type);
-}
+PlanetType Planet::NextCloserToOriginalPlanetType() const noexcept
+{ return NextCloserTo(m_type, m_original_type); }
 
 namespace {
-    PlanetType LoopPlanetTypeIncrement(PlanetType initial_type, int step) {
+    constexpr PlanetType LoopPlanetTypeIncrement(PlanetType initial_type, int step) noexcept {
         // avoid too large steps that would mess up enum arithmatic
-        if (std::abs(step) >= int(PlanetType::PT_ASTEROIDS)) {
-            DebugLogger() << "LoopPlanetTypeIncrement giving too large step: " << step;
+        const int absstep = step >= 0 ? step : -step;
+        if (absstep >= int(PlanetType::PT_ASTEROIDS))
             return initial_type;
-        }
         // some types can't be terraformed
         if (initial_type == PlanetType::PT_GASGIANT)
             return PlanetType::PT_GASGIANT;
@@ -340,42 +409,36 @@ namespace {
             new_type = PlanetType(int(new_type) + int(PlanetType::PT_ASTEROIDS));
         return new_type;
     }
-}
 
-PlanetType Planet::ClockwiseNextPlanetType() const
-{ return LoopPlanetTypeIncrement(m_type, 1); }
+    constexpr int PlanetTypeDifference(PlanetType type1, PlanetType type2) noexcept {
+        // no distance defined for invalid types
+        if (type1 == PlanetType::INVALID_PLANET_TYPE || type2 == PlanetType::INVALID_PLANET_TYPE)
+            return 0;
+        // if the same, distance is zero
+        if (type1 == type2)
+            return 0;
+        // no distance defined for asteroids or gas giants with anything else
+        if (type1 == PlanetType::PT_ASTEROIDS || type1 == PlanetType::PT_GASGIANT ||
+            type2 == PlanetType::PT_ASTEROIDS || type2 == PlanetType::PT_GASGIANT)
+        { return 0; }
+        // find distance around loop:
+        //
+        //  0  1  2
+        //  8     3
+        //  7     4
+        //    6 5
+        int sdiff = int(type1) - int(type2);
+        int diff = sdiff >= 0 ? sdiff : -sdiff;
+        // raw_dist -> actual dist
+        //  0 to 4       0 to 4
+        //  5 to 8       4 to 1
+        if (diff > 4)
+            diff = 9 - diff;
+        //std::cout << "typedifference type1: " << int(type1) << "  type2: " << int(type2) << "  diff: " << diff << "\n";
+        return diff;
+    }
 
-PlanetType Planet::CounterClockwiseNextPlanetType() const
-{ return LoopPlanetTypeIncrement(m_type, -1); }
-
-int Planet::TypeDifference(PlanetType type1, PlanetType type2) {
-    // no distance defined for invalid types
-    if (type1 == PlanetType::INVALID_PLANET_TYPE || type2 == PlanetType::INVALID_PLANET_TYPE)
-        return 0;
-    // if the same, distance is zero
-    if (type1 == type2)
-        return 0;
-    // no distance defined for asteroids or gas giants with anything else
-    if (type1 == PlanetType::PT_ASTEROIDS || type1 == PlanetType::PT_GASGIANT || type2 == PlanetType::PT_ASTEROIDS || type2 == PlanetType::PT_GASGIANT)
-        return 0;
-    // find distance around loop:
-    //
-    //  0  1  2
-    //  8     3
-    //  7     4
-    //    6 5
-    int diff = std::abs(int(type1) - int(type2));
-    // raw_dist -> actual dist
-    //  0 to 4       0 to 4
-    //  5 to 8       4 to 1
-    if (diff > 4)
-        diff = 9 - diff;
-    //std::cout << "typedifference type1: " << int(type1) << "  type2: " << int(type2) << "  diff: " << diff << "\n";
-    return diff;
-}
-
-namespace {
-    PlanetSize PlanetSizeIncrement(PlanetSize initial_size, int step) {
+    constexpr PlanetSize PlanetSizeIncrement(PlanetSize initial_size, int step) noexcept {
         // some sizes don't have meaningful increments
         if (initial_size == PlanetSize::SZ_GASGIANT)
             return PlanetSize::SZ_GASGIANT;
@@ -397,35 +460,23 @@ namespace {
     }
 }
 
-PlanetSize Planet::NextLargerPlanetSize() const
+PlanetType Planet::ClockwiseNextPlanetType() const noexcept
+{ return LoopPlanetTypeIncrement(m_type, 1); }
+
+PlanetType Planet::CounterClockwiseNextPlanetType() const noexcept
+{ return LoopPlanetTypeIncrement(m_type, -1); }
+
+int Planet::TypeDifference(PlanetType type1, PlanetType type2) noexcept
+{ return PlanetTypeDifference(type1, type2); }
+
+PlanetSize Planet::NextLargerPlanetSize() const noexcept
 { return PlanetSizeIncrement(m_size, 1); }
 
-PlanetSize Planet::NextSmallerPlanetSize() const
+PlanetSize Planet::NextSmallerPlanetSize() const noexcept
 { return PlanetSizeIncrement(m_size, -1); }
 
-float Planet::OrbitalPeriod() const
-{ return m_orbital_period; }
-
-float Planet::InitialOrbitalPosition() const
-{ return m_initial_orbital_position; }
-
-float Planet::OrbitalPositionOnTurn(int turn) const
+float Planet::OrbitalPositionOnTurn(int turn) const noexcept
 { return m_initial_orbital_position + OrbitalPeriod() * 2.0 * 3.1415926 / 4 * turn; }
-
-float Planet::RotationalPeriod() const
-{ return m_rotational_period; }
-
-float Planet::AxialTilt() const
-{ return m_axial_tilt; }
-
-std::shared_ptr<UniverseObject> Planet::Accept(const UniverseObjectVisitor& visitor) const
-{ return visitor.Visit(std::const_pointer_cast<Planet>(std::static_pointer_cast<const Planet>(UniverseObject::shared_from_this()))); }
-
-Meter* Planet::GetMeter(MeterType type)
-{ return UniverseObject::GetMeter(type); }
-
-const Meter* Planet::GetMeter(MeterType type) const
-{ return UniverseObject::GetMeter(type); }
 
 std::string Planet::CardinalSuffix(const ObjectMap& objects) const {
     std::string retval;
@@ -502,39 +553,51 @@ std::string Planet::CardinalSuffix(const ObjectMap& objects) const {
     return retval;
 }
 
-int Planet::ContainerObjectID() const
-{ return this->SystemID(); }
-
-const std::set<int>& Planet::ContainedObjectIDs() const
-{ return m_buildings; }
-
 bool Planet::Contains(int object_id) const
-{ return object_id != INVALID_OBJECT_ID && m_buildings.count(object_id); }
+{ return object_id != INVALID_OBJECT_ID && m_buildings.contains(object_id); }
 
-bool Planet::ContainedBy(int object_id) const
+bool Planet::ContainedBy(int object_id) const noexcept
 { return object_id != INVALID_OBJECT_ID && this->SystemID() == object_id; }
 
-std::vector<std::string> Planet::AvailableFoci() const {    // TODO: pass ScriptingContext
-    std::vector<std::string> retval;
-    auto this_planet = std::dynamic_pointer_cast<const Planet>(UniverseObject::shared_from_this());
-    if (!this_planet)
+bool Planet::FocusAvailable(std::string_view focus, const ScriptingContext& context) const {
+    const auto* species = context.species.GetSpecies(this->SpeciesName());
+    if (!species)
+        return false;
+    const auto& foci = species->Foci();
+    const auto it = std::find_if(foci.begin(), foci.end(),
+                                 [focus](const FocusType& focus_type) noexcept { return focus_type.Name() == focus; });
+    if (it == foci.end())
+        return false;
+    const auto* location = it->Location();
+    if (!location)
+        return false;
+
+    const ScriptingContext planet_context(context, ScriptingContext::Source{}, this);
+    return location->EvalOne(planet_context, this);
+}
+
+std::vector<std::string_view> Planet::AvailableFoci(const ScriptingContext& context) const {
+    std::vector<std::string_view> retval;
+    const auto* species = context.species.GetSpecies(this->SpeciesName());
+    if (!species)
         return retval;
-    const ScriptingContext context{this_planet};
-    if (const auto* species = GetSpecies(this_planet->SpeciesName())) {
-        retval.reserve(species->Foci().size());
-        for (const auto& focus_type : species->Foci()) {
-            if (const auto* location = focus_type.Location()) {
-                if (location->Eval(context, this_planet))
-                    retval.push_back(focus_type.Name());
-            }
+
+    const ScriptingContext planet_context(context, ScriptingContext::Source{}, this);
+
+    const auto& foci = species->Foci();
+    retval.reserve(species->Foci().size());
+    for (const auto& focus_type : foci) {
+        if (const auto* location = focus_type.Location()) {
+            if (location->EvalOne(planet_context, this))
+                retval.emplace_back(focus_type.Name());
         }
     }
 
     return retval;
 }
 
-const std::string& Planet::FocusIcon(const std::string& focus_name) const {
-    if (const Species* species = GetSpecies(this->SpeciesName())) {
+const std::string& Planet::FocusIcon(std::string_view focus_name, const ScriptingContext& context) const {
+    if (const Species* species = context.species.GetSpecies(this->SpeciesName())) {
         for (const FocusType& focus_type : species->Foci()) {
             if (focus_type.Name() == focus_name)
                 return focus_type.Graphic();
@@ -545,33 +608,72 @@ const std::string& Planet::FocusIcon(const std::string& focus_name) const {
 
 std::map<int, double> Planet::EmpireGroundCombatForces() const {
     std::map<int, double> empire_troops;
-    if (GetMeter(MeterType::METER_TROOPS)->Initial() > 0.0f) {
+    if (UniverseObject::GetMeter(MeterType::METER_TROOPS)->Initial() > 0.0f) {
         // empires may have garrisons on planets
-        empire_troops[Owner()] += GetMeter(MeterType::METER_TROOPS)->Initial() + 0.0001; // small bonus to ensure ties are won by initial owner
+        empire_troops[Owner()] += UniverseObject::GetMeter(MeterType::METER_TROOPS)->Initial() + 0.0001; // small bonus to ensure ties are won by initial owner
     }
-    if (!Unowned() && GetMeter(MeterType::METER_REBEL_TROOPS)->Initial() > 0.0f) {
+    if (!Unowned() && UniverseObject::GetMeter(MeterType::METER_REBEL_TROOPS)->Initial() > 0.0f) {
         // rebels may be present on empire-owned planets
-        empire_troops[ALL_EMPIRES] += GetMeter(MeterType::METER_REBEL_TROOPS)->Initial();
+        empire_troops[ALL_EMPIRES] += UniverseObject::GetMeter(MeterType::METER_REBEL_TROOPS)->Initial();
     }
     return empire_troops;
 }
 
-int Planet::TurnsSinceColonization() const {
+std::size_t Planet::SizeInMemory() const {
+    std::size_t retval = UniverseObject::SizeInMemory();
+    retval += sizeof(Planet) - sizeof(UniverseObject);
+
+    retval += sizeof(decltype(m_species_name)::value_type)*m_species_name.capacity();
+    retval += sizeof(decltype(m_focus)::value_type)*m_focus.capacity();
+    retval += sizeof(decltype(m_focus_turn_initial)::value_type)*m_focus_turn_initial.capacity();
+    retval += sizeof(decltype(m_buildings)::value_type)*m_buildings.capacity();
+    retval += sizeof(decltype(m_surface_texture)::value_type)*m_surface_texture.capacity();
+
+    return retval;
+}
+
+double Planet::AnnexationCost(int empire_id, const ScriptingContext& context) const {
+    if (m_species_name.empty())
+        return 0.0;
+    const auto* species = context.species.GetSpecies(m_species_name);
+    if (!species)
+        return 0.0;
+    const auto* ac = species->AnnexationCost();
+    if (!ac)
+        return 0.0;
+    if (ac->ConstantExpr())
+        return ac->Eval();
+
+    const auto* source_for_empire = context.Empires().GetSource(empire_id, context.ContextObjects()).get();
+    ScriptingContext source_planet_context{context, ScriptingContext::Source{}, source_for_empire};
+    source_planet_context.condition_local_candidate = this;
+    if (!source_planet_context.condition_root_candidate)
+        source_planet_context.condition_root_candidate = this;
+    return ac->Eval(source_planet_context);
+}
+
+int Planet::TurnsSinceColonization(int current_turn) const noexcept {
     if (m_turn_last_colonized == INVALID_GAME_TURN)
-        return 0;
-    int current_turn = CurrentTurn();
+        return current_turn - BEFORE_FIRST_TURN;
     if (current_turn == INVALID_GAME_TURN)
-        return 0;
+        return current_turn - BEFORE_FIRST_TURN;
     return current_turn - m_turn_last_colonized;
 }
 
-int Planet::TurnsSinceLastConquered() const {
+int Planet::TurnsSinceLastConquered(int current_turn) const noexcept {
     if (m_turn_last_conquered == INVALID_GAME_TURN)
-        return 0;
-    int current_turn = CurrentTurn();
+        return current_turn - BEFORE_FIRST_TURN;
     if (current_turn == INVALID_GAME_TURN)
-        return 0;
+        return current_turn - BEFORE_FIRST_TURN;
     return current_turn - m_turn_last_conquered;
+}
+
+int Planet::TurnsSinceLastAnnexed(int current_turn) const noexcept {
+    if (m_turn_last_annexed == INVALID_GAME_TURN)
+        return current_turn - BEFORE_FIRST_TURN;
+    if (current_turn == INVALID_GAME_TURN)
+        return current_turn - BEFORE_FIRST_TURN;
+    return current_turn - m_turn_last_annexed;
 }
 
 void Planet::SetType(PlanetType type) {
@@ -610,7 +712,7 @@ void Planet::SetHighAxialTilt() {
 }
 
 void Planet::AddBuilding(int building_id) {
-    size_t buildings_size = m_buildings.size();
+    auto buildings_size = m_buildings.size();
     m_buildings.insert(building_id);
     if (buildings_size != m_buildings.size())
         StateChangedSignal();
@@ -618,7 +720,7 @@ void Planet::AddBuilding(int building_id) {
 }
 
 bool Planet::RemoveBuilding(int building_id) {
-    if (m_buildings.count(building_id)) {
+    if (m_buildings.contains(building_id)) {
         m_buildings.erase(building_id);
         StateChangedSignal();
         return true;
@@ -627,8 +729,24 @@ bool Planet::RemoveBuilding(int building_id) {
 }
 
 void Planet::Reset(ObjectMap& objects) {
-    PopCenter::Reset(objects);
-    ResourceCenter::Reset(objects);
+    GetMeter(MeterType::METER_POPULATION)->Reset();
+    GetMeter(MeterType::METER_TARGET_POPULATION)->Reset();
+    GetMeter(MeterType::METER_HAPPINESS)->Reset();
+    GetMeter(MeterType::METER_TARGET_HAPPINESS)->Reset();
+    m_species_name.clear();
+
+    m_focus.clear();
+    m_last_turn_focus_changed = INVALID_GAME_TURN;
+
+    GetMeter(MeterType::METER_INDUSTRY)->Reset();
+    GetMeter(MeterType::METER_RESEARCH)->Reset();
+    GetMeter(MeterType::METER_INFLUENCE)->Reset();
+    GetMeter(MeterType::METER_CONSTRUCTION)->Reset();
+
+    GetMeter(MeterType::METER_TARGET_INDUSTRY)->Reset();
+    GetMeter(MeterType::METER_TARGET_RESEARCH)->Reset();
+    GetMeter(MeterType::METER_TARGET_INFLUENCE)->Reset();
+    GetMeter(MeterType::METER_TARGET_CONSTRUCTION)->Reset();
 
     GetMeter(MeterType::METER_SUPPLY)->Reset();
     GetMeter(MeterType::METER_MAX_SUPPLY)->Reset();
@@ -641,73 +759,82 @@ void Planet::Reset(ObjectMap& objects) {
     GetMeter(MeterType::METER_DETECTION)->Reset();
     GetMeter(MeterType::METER_REBEL_TROOPS)->Reset();
 
-    if (m_is_about_to_be_colonized && !OwnedBy(ALL_EMPIRES)) {
-        for (const auto& building : objects.find<Building>(m_buildings)) {
-            if (!building)
-                continue;
-            building->Reset();
+    if (m_is_about_to_be_colonized) {
+        for (auto* building : objects.findRaw<Building>(m_buildings)) {
+            if (building)
+                building->Reset();
         }
     }
 
+    //m_last_turn_annexed left unchanged
     //m_turn_last_colonized left unchanged
     //m_turn_last_conquered left unchanged
+    m_ordered_annexed_by_empire_id = ALL_EMPIRES;
     m_is_about_to_be_colonized = false;
     m_is_about_to_be_invaded = false;
     m_is_about_to_be_bombarded = false;
+    m_ordered_given_to_empire_id = ALL_EMPIRES;
+    m_last_annexed_by_empire_id = ALL_EMPIRES;
+    m_last_invaded_by_empire_id = ALL_EMPIRES;
+    m_last_colonized_by_empire_id = ALL_EMPIRES;
     SetOwner(ALL_EMPIRES);
 }
 
-void Planet::Depopulate() {
-    PopCenter::Depopulate();
-
+void Planet::Depopulate(int current_turn) {
+    GetMeter(MeterType::METER_POPULATION)->Reset();
+    GetMeter(MeterType::METER_HAPPINESS)->Reset();
     GetMeter(MeterType::METER_INDUSTRY)->Reset();
     GetMeter(MeterType::METER_RESEARCH)->Reset();
     GetMeter(MeterType::METER_INFLUENCE)->Reset();
     GetMeter(MeterType::METER_CONSTRUCTION)->Reset();
 
-    ClearFocus();
+    ClearFocus(current_turn);
 }
 
-void Planet::Conquer(int conquerer, EmpireManager& empires, Universe& universe) {
-    m_turn_last_conquered = CurrentTurn();
+void Planet::Conquer(int conquerer, ScriptingContext& context) {
+    m_turn_last_conquered = context.current_turn;
+    m_owner_before_last_conquered = this->Owner();
 
     // deal with things on production queue located at this planet
-    Empire::ConquerProductionQueueItemsAtLocation(ID(), conquerer, empires);
+    Empire::ConquerProductionQueueItemsAtLocation(ID(), conquerer, context.Empires());
 
-    ObjectMap& objects{universe.Objects()};
-    auto empire_ids = empires.EmpireIDs();
+    ObjectMap& objects{context.ContextObjects()};
+    const auto& ids_as_flatset{context.EmpireIDs()};
+    const std::vector<int> empire_ids{ids_as_flatset.begin(), ids_as_flatset.end()};
 
     // deal with UniverseObjects (eg. buildings) located on this planet
-    for (auto& building : objects.find<Building>(m_buildings)) {
+    for (auto* building : objects.findRaw<Building>(m_buildings)) {
         const BuildingType* type = GetBuildingType(building->BuildingTypeName());
 
         // determine what to do with building of this type...
-        const CaptureResult cap_result = type->GetCaptureResult(
-            building->Owner(), conquerer, this->ID(), false);
+        const auto cap_result = type->GetCaptureResult(building->Owner(), conquerer, this->ID(), false);
 
         if (cap_result == CaptureResult::CR_CAPTURE) {
             // replace ownership
             building->SetOwner(conquerer);
+            building->SetOrderedScrapped(false);
         } else if (cap_result == CaptureResult::CR_DESTROY) {
             // destroy object
             //DebugLogger() << "Planet::Conquer destroying object: " << building->Name();
             this->RemoveBuilding(building->ID());
-            if (auto system = objects.get<System>(this->SystemID()))
+            if (auto system = objects.getRaw<System>(this->SystemID()))
                 system->Remove(building->ID());
-            universe.Destroy(building->ID(), empire_ids);
+            context.ContextUniverse().Destroy(building->ID(), empire_ids);
         } else if (cap_result == CaptureResult::CR_RETAIN) {
-            // do nothing
+            // do nothing, including leaving scrapping state
         }
     }
 
     // replace ownership
     SetOwner(conquerer);
+    m_last_invaded_by_empire_id = conquerer;
+    ClearGiveToEmpire();
 
     if (conquerer == ALL_EMPIRES) {
-        if (const auto species = GetSpecies(SpeciesName()))
-            SetFocus(species->DefaultFocus());
+        if (const auto species = context.species.GetSpecies(SpeciesName()))
+            SetFocus(species->DefaultFocus(), context);
         else
-            ClearFocus();
+            ClearFocus(m_turn_last_conquered);
     }
 
     GetMeter(MeterType::METER_SUPPLY)->SetCurrent(0.0f);
@@ -732,10 +859,51 @@ void Planet::Conquer(int conquerer, EmpireManager& empires, Universe& universe) 
     GetMeter(MeterType::METER_DETECTION)->BackPropagate();
 }
 
-void Planet::SetSpecies(std::string species_name) {
-    if (SpeciesName().empty() && !species_name.empty())
-        m_turn_last_colonized = CurrentTurn();  // if setting species with an effect, not via Colonize, consider it a colonization when there was no previous species set
-    PopCenter::SetSpecies(std::move(species_name));
+void Planet::SetSpecies(std::string species_name, int turn, const SpeciesManager& sm) {
+    if (m_species_name.empty() && !species_name.empty())
+        m_turn_last_colonized = turn;  // if setting species with an effect, not via Colonize, consider it a colonization when there was no previous species set
+
+    if (!species_name.empty() && !sm.GetSpecies(species_name))
+        ErrorLogger() << "Planet::SetSpecies couldn't get species with name " << species_name;
+
+    m_species_name = std::move(species_name);
+}
+
+void Planet::SetFocus(std::string focus, const ScriptingContext& context) {
+    if (focus == m_focus)
+        return;
+    if (focus.empty()) {
+        ClearFocus(context.current_turn);
+        return;
+    }
+    if (!FocusAvailable(focus, context)) {
+        ErrorLogger() << "Planet::SetFocus Exploiter!-- unavailable focus " << focus
+                      << " attempted to be set for object w/ dump string: " << Dump();
+        return;
+    }
+
+    m_focus = std::move(focus);
+    if (m_focus == m_focus_turn_initial)
+        m_last_turn_focus_changed = m_last_turn_focus_changed_turn_initial;
+    else
+        m_last_turn_focus_changed = context.current_turn;
+    ResourceCenterChangedSignal();
+}
+
+void Planet::ClearFocus(int current_turn) {
+    m_focus.clear();
+    m_last_turn_focus_changed = current_turn;
+    ResourceCenterChangedSignal();
+}
+
+void Planet::UpdateFocusHistory() {
+    TraceLogger() << "Planet::UpdateFocusHistory: focus: " << m_focus
+        << "  initial focus: " << m_focus_turn_initial
+        << "  turns since change initial: " << m_last_turn_focus_changed_turn_initial;
+    if (m_focus != m_focus_turn_initial) {
+        m_focus_turn_initial = m_focus;
+        m_last_turn_focus_changed_turn_initial = m_last_turn_focus_changed;
+    }
 }
 
 bool Planet::Colonize(int empire_id, std::string species_name, double population,
@@ -747,15 +915,17 @@ bool Planet::Colonize(int empire_id, std::string species_name, double population
     // if desired pop > 0, we want a colony, not an outpost, so we need to do some checks
     if (population > 0.0) {
         // check if specified species exists and get reference
-        species = GetSpecies(species_name);
+        species = context.species.GetSpecies(species_name);
         if (!species) {
             ErrorLogger() << "Planet::Colonize couldn't get species: " << species_name;
             return false;
         }
         // check if specified species can colonize this planet
-        if (EnvironmentForSpecies(species_name) < PlanetEnvironment::PE_HOSTILE) {
-            ErrorLogger() << "Planet::Colonize: can't colonize planet with species " << species_name << " because planet is "
-                          << m_type << " which for that species is environment: " << EnvironmentForSpecies(species_name);
+        if (EnvironmentForSpecies(context.species, species_name) < PlanetEnvironment::PE_HOSTILE) {
+            ErrorLogger() << "Planet::Colonize: can't colonize planet with species " << species_name
+                          << " because planet is " << m_type 
+                          << " which for that species is environment: "
+                          << EnvironmentForSpecies(context.species, species_name);
             return false;
         }
     }
@@ -763,40 +933,50 @@ bool Planet::Colonize(int empire_id, std::string species_name, double population
     // reset the planet to unowned/unpopulated
     if (!OwnedBy(empire_id)) {
         Reset(objects);
+
     } else {
-        PopCenter::Reset(objects);
-        for (const auto& building : objects.find<Building>(m_buildings)) {
+        GetMeter(MeterType::METER_POPULATION)->Reset();
+        GetMeter(MeterType::METER_TARGET_POPULATION)->Reset();
+        GetMeter(MeterType::METER_HAPPINESS)->Reset();
+        GetMeter(MeterType::METER_TARGET_HAPPINESS)->Reset();
+        m_species_name.clear();
+
+        for (auto* building : objects.findRaw<Building>(m_buildings)) {
             if (!building)
                 continue;
             building->Reset();
         }
+        m_ordered_annexed_by_empire_id = ALL_EMPIRES;
         m_is_about_to_be_colonized = false;
         m_is_about_to_be_invaded = false;
         m_is_about_to_be_bombarded = false;
+        m_ordered_given_to_empire_id = ALL_EMPIRES;
+        m_last_invaded_by_empire_id = ALL_EMPIRES;
+        m_last_annexed_by_empire_id = ALL_EMPIRES;
         SetOwner(ALL_EMPIRES);
     }
 
     // if desired pop > 0, we want a colony, not an outpost, so we have to set the colony species
-    if (population > 0.0)
-        SetSpecies(std::move(species_name));
+    if (population > MINIMUM_POP_CENTER_POPULATION)
+        SetSpecies(std::move(species_name), context.current_turn, context.species);
     m_turn_last_colonized = context.current_turn; // may be redundant with same in SetSpecies, but here occurrs always, whereas in SetSpecies is only done if species is initially empty
 
     // find a default focus. use first defined available focus.
     // AvailableFoci function should return a vector of all names of
     // available foci.
-    auto available_foci = AvailableFoci();
+    const auto available_foci = AvailableFoci(context);
     if (species && !available_foci.empty()) {
         bool found_preference = false;
-        for (const auto& focus : available_foci) {
+        for (const auto focus : available_foci) {
             if (!focus.empty() && focus == species->DefaultFocus()) {
-                SetFocus(focus);
+                SetFocus(std::string{focus}, context);
                 found_preference = true;
                 break;
             }
         }
 
         if (!found_preference)
-            SetFocus(*available_foci.begin());
+            SetFocus(std::string{available_foci.front()}, context);
     } else {
         DebugLogger() << "Planet::Colonize unable to find a focus to set for species "
                       << this->SpeciesName();
@@ -810,12 +990,32 @@ bool Planet::Colonize(int empire_id, std::string species_name, double population
 
     // set specified empire as owner
     SetOwner(empire_id);
+    m_last_colonized_by_empire_id = empire_id;
 
     // if there are buildings on the planet, set the specified empire as their owner too
-    for (auto& building : objects.find<Building>(BuildingIDs()))
+    for (auto* building : objects.findRaw<Building>(BuildingIDs()))
         building->SetOwner(empire_id);
 
     return true;
+}
+
+void Planet::SetIsOrderAnnexedByEmpire(int empire_id) {
+    const auto initial_empire = m_ordered_annexed_by_empire_id;
+    if (empire_id == initial_empire)
+        return;
+
+    m_ordered_annexed_by_empire_id = empire_id;
+    ResourceCenterChangedSignal();
+}
+
+void Planet::ResetBeingAnnxed()
+{ SetIsOrderAnnexedByEmpire(ALL_EMPIRES); }
+
+void Planet::SetLastAnnexedByEmpire(int id) {
+    const auto initial_empire_id = m_last_annexed_by_empire_id;
+    if (initial_empire_id == id) return;
+    m_last_annexed_by_empire_id = id;
+    StateChangedSignal();
 }
 
 void Planet::SetIsAboutToBeColonized(bool b) {
@@ -828,6 +1028,20 @@ void Planet::SetIsAboutToBeColonized(bool b) {
 void Planet::ResetIsAboutToBeColonized()
 { SetIsAboutToBeColonized(false); }
 
+void Planet::SetLastColonizedByEmpire(int id) {
+    const auto initial_empire_id = m_last_colonized_by_empire_id;
+    if (initial_empire_id == id) return;
+    m_last_colonized_by_empire_id = id;
+    StateChangedSignal();
+}
+
+void Planet::SetTurnLastColonized(int turn) {
+    const auto initial_turn = m_turn_last_colonized;
+    if (initial_turn == turn) return;
+    m_turn_last_colonized = turn;
+    StateChangedSignal();
+}
+
 void Planet::SetIsAboutToBeInvaded(bool b) {
     bool initial_status = m_is_about_to_be_invaded;
     if (b == initial_status) return;
@@ -837,6 +1051,13 @@ void Planet::SetIsAboutToBeInvaded(bool b) {
 
 void Planet::ResetIsAboutToBeInvaded()
 { SetIsAboutToBeInvaded(false); }
+
+void Planet::SetLastInvadedByEmpire(int id) {
+    const auto initial_empire_id = m_last_invaded_by_empire_id;
+    if (initial_empire_id == id) return;
+    m_last_invaded_by_empire_id = id;
+    StateChangedSignal();
+}
 
 void Planet::SetIsAboutToBeBombarded(bool b) {
     bool initial_status = m_is_about_to_be_bombarded;
@@ -849,16 +1070,20 @@ void Planet::ResetIsAboutToBeBombarded()
 { SetIsAboutToBeBombarded(false); }
 
 void Planet::SetGiveToEmpire(int empire_id) {
-    if (empire_id == m_ordered_given_to_empire_id) return;
-    m_ordered_given_to_empire_id = empire_id;
-    StateChangedSignal();
+    if (empire_id != m_ordered_given_to_empire_id) {
+        m_ordered_given_to_empire_id = empire_id;
+        StateChangedSignal();
+    }
 }
 
 void Planet::ClearGiveToEmpire()
 { SetGiveToEmpire(ALL_EMPIRES); }
 
-void Planet::SetLastTurnAttackedByShip(int turn)
+void Planet::SetLastTurnAttackedByShip(int turn) noexcept
 { m_last_turn_attacked_by_ship = turn; }
+
+void Planet::SetLastTurnAnnexed(int turn) noexcept
+{ m_turn_last_annexed = turn; }
 
 void Planet::SetSurfaceTexture(const std::string& texture) {
     m_surface_texture = texture;
@@ -867,20 +1092,30 @@ void Planet::SetSurfaceTexture(const std::string& texture) {
 
 void Planet::PopGrowthProductionResearchPhase(ScriptingContext& context) {
     UniverseObject::PopGrowthProductionResearchPhase(context);
-    PopCenterPopGrowthProductionResearchPhase();
 
-    // should be run after a meter update, but before a backpropagation, so check current, not initial, meter values
+    if (!m_species_name.empty() && !Populated()) {
+        // Should be run after meter update but before a backpropagation,
+        // so check current, not initial, meter values. If population falls
+        // below threshold, kill off the remainder
+        Depopulate(context.current_turn);
+    }
 
     // check for colonies without positive population, and change to outposts
-    if (!SpeciesName().empty() && GetMeter(MeterType::METER_POPULATION)->Current() <= 0.0f) {
+    if (!SpeciesName().empty() &&
+        GetMeter(MeterType::METER_POPULATION)->Current() <= MINIMUM_POP_CENTER_POPULATION)
+    {
         if (auto empire = context.GetEmpire(this->Owner())) {
-            empire->AddSitRepEntry(CreatePlanetDepopulatedSitRep(this->ID()));
+            empire->AddSitRepEntry(CreatePlanetDepopulatedSitRep(this->ID(), context.current_turn));
 
             if (!HasTag(TAG_STAT_SKIP_DEPOP, context))
                 empire->RecordPlanetDepopulated(*this);
         }
         // remove species
-        PopCenter::Reset(context.ContextObjects());
+        GetMeter(MeterType::METER_POPULATION)->Reset();
+        GetMeter(MeterType::METER_TARGET_POPULATION)->Reset();
+        GetMeter(MeterType::METER_HAPPINESS)->Reset();
+        GetMeter(MeterType::METER_TARGET_HAPPINESS)->Reset();
+        m_species_name.clear();
     }
 
     StateChangedSignal();
@@ -888,8 +1123,14 @@ void Planet::PopGrowthProductionResearchPhase(ScriptingContext& context) {
 
 void Planet::ResetTargetMaxUnpairedMeters() {
     UniverseObject::ResetTargetMaxUnpairedMeters();
-    ResourceCenterResetTargetMaxUnpairedMeters();
-    PopCenterResetTargetMaxUnpairedMeters();
+
+    GetMeter(MeterType::METER_TARGET_INDUSTRY)->ResetCurrent();
+    GetMeter(MeterType::METER_TARGET_RESEARCH)->ResetCurrent();
+    GetMeter(MeterType::METER_TARGET_INFLUENCE)->ResetCurrent();
+    GetMeter(MeterType::METER_TARGET_CONSTRUCTION)->ResetCurrent();
+
+    GetMeter(MeterType::METER_TARGET_POPULATION)->ResetCurrent();
+    GetMeter(MeterType::METER_TARGET_HAPPINESS)->ResetCurrent();
 
     GetMeter(MeterType::METER_MAX_SUPPLY)->ResetCurrent();
     GetMeter(MeterType::METER_MAX_STOCKPILE)->ResetCurrent();
@@ -902,8 +1143,18 @@ void Planet::ResetTargetMaxUnpairedMeters() {
 
 void Planet::ClampMeters() {
     UniverseObject::ClampMeters();
-    ResourceCenterClampMeters();
-    PopCenterClampMeters();
+
+    GetMeter(MeterType::METER_TARGET_INDUSTRY)->ClampCurrentToRange();
+    GetMeter(MeterType::METER_TARGET_RESEARCH)->ClampCurrentToRange();
+    //GetMeter(MeterType::METER_TARGET_INFLUENCE)->ClampCurrentToRange(-Meter::LARGE_VALUE, Meter::LARGE_VALUE);
+    GetMeter(MeterType::METER_TARGET_CONSTRUCTION)->ClampCurrentToRange();
+
+    GetMeter(MeterType::METER_INDUSTRY)->ClampCurrentToRange();
+    GetMeter(MeterType::METER_RESEARCH)->ClampCurrentToRange();
+    //GetMeter(MeterType::METER_INFLUENCE)->ClampCurrentToRange(-Meter::LARGE_VALUE, Meter::LARGE_VALUE);
+    GetMeter(MeterType::METER_CONSTRUCTION)->ClampCurrentToRange();
+
+    UniverseObject::GetMeter(MeterType::METER_POPULATION)->ClampCurrentToRange();
 
     UniverseObject::GetMeter(MeterType::METER_MAX_SHIELD)->ClampCurrentToRange();
     UniverseObject::GetMeter(MeterType::METER_SHIELD)->ClampCurrentToRange(Meter::DEFAULT_VALUE, UniverseObject::GetMeter(MeterType::METER_MAX_SHIELD)->Current());
@@ -922,24 +1173,24 @@ void Planet::ClampMeters() {
 
 namespace {
     // sorted pair, so order of empire IDs specified doesn't matter
-    std::pair<int, int> DiploKey(int id1, int ind2)
-    { return std::make_pair(std::max(id1, ind2), std::min(id1, ind2)); }
+    constexpr std::pair<int, int> DiploKey(int id1, int ind2)
+        noexcept(noexcept(std::max(1, -3)) && noexcept(std::min(-124, 0)))
+    { return {std::max(id1, ind2), std::min(id1, ind2)}; }
 }
 
 void Planet::ResolveGroundCombat(std::map<int, double>& empires_troops,
-                                 const EmpireManager::DiploStatusMap& diplo_statuses)
+                                 const DiploStatusMap& diplo_statuses)
 {
     if (empires_troops.empty() || empires_troops.size() == 1)
         return;
 
     // give bonuses for allied ground combat, so allies can effectively fight together
     auto effective_empires_troops{empires_troops};
-    for (auto& [empire1_id, troop1_count] : empires_troops) {
-        (void)troop1_count; // quiet warning
-        for (auto& [empire2_id, troop2_count] : empires_troops) {
-            if (empire1_id == empire2_id)
-                continue;
-            auto it = diplo_statuses.find(DiploKey(empire1_id, empire2_id));
+    for (const auto empire1_id : empires_troops | range_keys) {
+        const auto not_empire1 = [empire1_id](const auto& id2_troops) noexcept { return empire1_id != id2_troops.first; };
+
+        for (const auto& [empire2_id, troop2_count] : empires_troops | range_filter(not_empire1)) {
+            const auto it = diplo_statuses.find(DiploKey(empire1_id, empire2_id));
             if (it != diplo_statuses.end() && it->second == DiplomaticStatus::DIPLO_ALLIED)
                 effective_empires_troops[empire1_id] += troop2_count;
         }
@@ -947,25 +1198,24 @@ void Planet::ResolveGroundCombat(std::map<int, double>& empires_troops,
 
     // find effective troops and ID of victor...
     std::multimap<double, int> inverted_empires_troops;
-    for (const auto& entry : effective_empires_troops)
-        inverted_empires_troops.emplace(entry.second, entry.first);
+    for (const auto& [eff_emp_id, eff_troops] : effective_empires_troops)
+        inverted_empires_troops.emplace(eff_troops, eff_emp_id);
 
-    int victor_id;
-    float victor_effective_troops;
-    std::tie(victor_effective_troops, victor_id) = *inverted_empires_troops.rbegin();
+    const auto [victor_self_troops, victor_id] = *inverted_empires_troops.rbegin();
+    static_assert(std::is_integral_v<decltype(victor_id)>);
 
 
     // victor has effective troops reduced by the effective troop count of
     // the strongest enemy combatant (allied and at-peace co-combatants are
     // ignored for this reduction)
-    float highest_loser_enemy_effective_troops = 0.0f;
+    double highest_loser_enemy_effective_troops = 0.0f;
     for (auto highest_loser_it = inverted_empires_troops.rbegin();
          highest_loser_it != inverted_empires_troops.rend(); ++highest_loser_it)
     {
-        const auto& [loser_effective_troops, loser_id] = *highest_loser_it;
+        const auto [loser_effective_troops, loser_id] = *highest_loser_it;
         if (loser_id == victor_id)
             continue;
-        auto it = diplo_statuses.find(DiploKey(loser_id, victor_id));
+        const auto it = diplo_statuses.find(DiploKey(loser_id, victor_id));
         if (it != diplo_statuses.end() && it->second == DiplomaticStatus::DIPLO_PEACE)
             continue;
 
@@ -974,8 +1224,8 @@ void Planet::ResolveGroundCombat(std::map<int, double>& empires_troops,
         break;
     }
 
-    victor_effective_troops -= highest_loser_enemy_effective_troops;
-    float victor_starting_troops = empires_troops[victor_id];
+    const auto victor_effective_troops = victor_self_troops - highest_loser_enemy_effective_troops;
+    const auto victor_starting_troops = empires_troops[victor_id];
 
     // every other combatant loses all troops
     empires_troops.clear();

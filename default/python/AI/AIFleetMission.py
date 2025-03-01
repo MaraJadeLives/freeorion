@@ -110,10 +110,7 @@ class AIFleetMission:
         if self.type == mission_type and self.target == target:
             return
         if self.type or self.target:
-            debug(
-                "%s: change mission assignment from %s:%s to %s:%s"
-                % (self.fleet, self.type, self.target, mission_type, target)
-            )
+            debug(f"{self.fleet}: change mission assignment from {self.type}:{self.target} to {mission_type}:{target}")
         self.type = mission_type
         self.target = target
 
@@ -188,9 +185,9 @@ class AIFleetMission:
             if fleet_mission.type != self.type or fleet_mission.target != self.target:
                 debug("Local candidate %s does not have same mission." % fleet_mission)
                 continue
-            FleetUtilsAI.merge_fleet_a_into_b(fid, fleet_id, context="Order %s of mission %s" % (context, self))
+            FleetUtilsAI.merge_fleet_a_into_b(fid, fleet_id, context=f"Order {context} of mission {self}")
 
-    def _is_valid_fleet_mission_target(self, mission_type: MissionType, target: Target):
+    def _is_valid_fleet_mission_target(self, mission_type: MissionType, target: Target):  # noqa: C901
         if not target:
             return False
         if mission_type == MissionType.EXPLORATION:
@@ -241,7 +238,7 @@ class AIFleetMission:
             self.target = None
             self.type = None
 
-    def _check_abort_mission(self, fleet_order: AIFleetOrder):
+    def _check_abort_mission(self, fleet_order: AIFleetOrder):  # noqa: C901
         """checks if current mission (targeting a planet) should be aborted"""
         planet_stealthed = False
         target_is_planet = fleet_order.target and isinstance(fleet_order.target, TargetPlanet)
@@ -292,7 +289,7 @@ class AIFleetMission:
         FleetUtilsAI.split_fleet(self.fleet.id)
         return True
 
-    def _check_retarget_invasion(self):
+    def _check_retarget_invasion(self):  # noqa: C901
         """checks if an invasion mission should be retargeted"""
         universe = fo.getUniverse()
         empire_id = fo.empireID()
@@ -393,7 +390,7 @@ class AIFleetMission:
         # before proceeding
         return False
 
-    def issue_fleet_orders(self):
+    def issue_fleet_orders(self):  # noqa: C901
         """issues AIFleetOrders which can be issued in system and moves to next one if is possible"""
         # TODO: priority
         order_completed = True
@@ -441,8 +438,9 @@ class AIFleetMission:
                     fleet_order.issue_order()
                 else:
                     debug("NOT issuing (even though can_issue) fleet order %s" % fleet_order)
-                status_words = tuple(["not", ""][_s] for _s in [fleet_order.order_issued, fleet_order.executed])
-                debug("Order %s issued and %s fully executed." % status_words)
+                issued = "issued" if fleet_order.order_issued else "not issued"
+                executed = "fully executed" if fleet_order.executed else "not fully executed"
+                debug(f"Order {issued} issued and {executed}.")
                 if not fleet_order.executed:
                     order_completed = False
             else:  # check that we're not held up by a Big Monster
@@ -499,15 +497,13 @@ class AIFleetMission:
                         )
                         debug("    Order details are %s" % last_order)
                         debug(
-                            "    Order is valid: %s; issued: %s; executed: %s"
-                            % (last_order.is_valid(), last_order.order_issued, last_order.executed)
+                            f"    Order is valid: {last_order.is_valid()}; issued: {last_order.order_issued}; executed: {last_order.executed}"
                         )
                         if not last_order.is_valid():
                             source_target = last_order.fleet
                             target_target = last_order.target
                             debug(
-                                "        source target validity: %s; target target validity: %s "
-                                % (bool(source_target), bool(target_target))
+                                f"        source target validity: {bool(source_target)}; target target validity: {bool(target_target)} "
                             )
                         return  # colonize order must not have completed yet
                 clear_all = True
@@ -779,10 +775,6 @@ class AIFleetMission:
         # TODO: Allow to split fleet to send only damaged ships to repair
         ships_cur_health, ships_max_health = FleetUtilsAI.get_current_and_max_structure(fleet_id)
         return ships_cur_health < repair_limit * ships_max_health
-
-    def get_location_target(self) -> TargetSystem:
-        # TODO add parameter turn
-        return TargetSystem(get_fleet_position(self.fleet.id))
 
     def __eq__(self, other):
         return isinstance(other, self.__class__) and self.fleet == other.target

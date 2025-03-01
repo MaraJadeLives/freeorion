@@ -111,9 +111,9 @@ void DecodeBase64(std::vector<unsigned char>& data, const char* str, std::size_t
     }
 }
 
-const std::size_t VERA_TTF_SIZE = 960016;
+inline constexpr std::size_t VERA_TTF_SIZE = 960016;
 
-const char VERA_TTF[VERA_TTF_SIZE + 1] = {
+inline constexpr char VERA_TTF[VERA_TTF_SIZE + 1] = {
     'A', 'A', 'E', 'A', 'A', 'A', 'A', 'T', 'A', 'Q', 'A', 'A', 'B', 'A', 'A', 'w', 'R', 'k', 'Z', 'U', 'T', 'V', 'n', '0', 'U', 't', 'w', 'A', 'A', 'A', 'E', '8', 'A', 'A', 'A', 'A', 'H', 'E', 'd', 'E', 'R', 'U', 'a', 'C', 'C', 'n', 'v', '4', 'A', 'A', 'A', 'B', 'W', 'A', 'A', 'A', 'A', 'p', 'R', 'H', 
     'U', 'E', '9', 'T', 'q', 'B', 's', 'T', '6', 'g', 'A', 'A', 'A', '+', 'w', 'A', 'A', 'J', 'd', 'U', 'R', '1', 'N', 'V', 'Q', 's', 'a', 'x', 'M', 'e', '8', 'A', 'A', 'J', 't', 'A', 'A', 'A', 'A', 'V', 'g', 'k', '9', 'T', 'L', 'z', 'L', '5', 'I', 'X', 'I', 't', 'A', 'A', 'C', 'w', 'x', 'A', 'A', 'A', 
     'A', 'F', 'Z', 'j', 'b', 'W', 'F', 'w', 'u', 'q', 'n', 'Z', 'r', 'Q', 'A', 'A', 's', 'R', 'w', 'A', 'A', 'B', 'X', 'm', 'Y', '3', 'Z', '0', 'I', 'A', 'B', 'p', 'H', 'T', 'k', 'A', 'A', 'M', 'c', 'E', 'A', 'A', 'A', 'B', '/', 'm', 'Z', 'w', 'Z', '2', '1', 'x', 'N', 'H', 'Z', 'q', 'A', 'A', 'D', 'J', 
@@ -16123,6 +16123,6 @@ void VeraTTFBytes(std::vector<unsigned char>& result)
     DecodeBase64(result, VERA_TTF, VERA_TTF_SIZE);
 }
 
-const char* DEFAULT_FONT_NAME = "HopefullyUniqueDefaultFontName!!!!!!!!!!!!!!11111eleven";
+inline constexpr std::string_view DEFAULT_FONT_NAME = "HopefullyUniqueDefaultFontName!!!!!!!!!!!!!!11111eleven";
 
 }

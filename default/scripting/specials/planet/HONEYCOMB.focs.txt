@@ -69,13 +69,13 @@ Special
                         * (NamedReal name = "HONEYCOMB_TARGET_INDUSTRY_PERPOP"
                                      value = 0.5 * [[INDUSTRY_PER_POP]])
 
-        [[CHANCE_OF_GUARD_2]]
+        [[CHANCE_OF_GUARD_3]]
         
         [[SPECIAL_LIKES_OR_DISLIKES_SPECIAL_STABILITY_EFFECTS]]
     ]
     graphic = "icons/specials_huge/honeycomb.png"
 
 #include "monster_guard.macros"
-#include "/scripting/common/base_prod.macros"
-#include "/scripting/common/priorities.macros"
+#include "/scripting/macros/base_prod.macros"
+#include "/scripting/macros/priorities.macros"
 #include "/scripting/specials/specials.macros.txt"

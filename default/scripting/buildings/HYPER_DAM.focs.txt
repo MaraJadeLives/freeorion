@@ -21,9 +21,12 @@ BuildingType
                 OwnedBy empire = Source.Owner
                 Happiness low = (NamedReal name = "BLD_HYPER_DAM_MIN_STABILITY" value = 12)
                 ResourceSupplyConnected empire = Source.Owner condition = Source
-                Not ResourceSupplyConnected empire = Source.Owner condition = And [
-                    Building name = "BLD_BLACK_HOLE_POW_GEN" 
-                    OwnedBy empire = Source.Owner
+                Or [
+                    Not ResourceSupplyConnected empire = Source.Owner condition = And [
+                        Building name = "BLD_BLACK_HOLE_POW_GEN"
+                        OwnedBy empire = Source.Owner
+                    ]
+                    Not Happiness low = NamedRealLookup name = "BLD_BLACK_HOLE_POW_GEN_MIN_STABILITY"
                 ]
             ]
             stackinggroup = "BLD_HYPER_DAM_BONUS"
@@ -39,9 +42,12 @@ BuildingType
                 ResourceSupplyConnected empire = Source.Owner condition = Source
                 Not Star type = BlackHole
                 Focus type = "FOCUS_INDUSTRY"
-                Not ResourceSupplyConnected empire = Source.Owner condition = And [
-                    Building name = "BLD_BLACK_HOLE_POW_GEN" 
-                    OwnedBy empire = Source.Owner
+                Or [
+                    Not ResourceSupplyConnected empire = Source.Owner condition = And [
+                        Building name = "BLD_BLACK_HOLE_POW_GEN"
+                        OwnedBy empire = Source.Owner
+                    ]
+                    Not Happiness low = NamedRealLookup name = "BLD_BLACK_HOLE_POW_GEN_MIN_STABILITY"
                 ]
             ]
             stackinggroup = "BLD_HYPER_DAM_MALUS"
@@ -51,7 +57,7 @@ BuildingType
     ]
     icon = "icons/building/blackhole.png"
 
-#include "/scripting/common/enqueue.macros"
-#include "/scripting/common/priorities.macros"
-#include "/scripting/common/base_prod.macros"
+#include "/scripting/macros/enqueue.macros"
+#include "/scripting/macros/priorities.macros"
+#include "/scripting/macros/base_prod.macros"
 #include "/scripting/buildings/buildings.macros"

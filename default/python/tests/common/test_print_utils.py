@@ -1,4 +1,3 @@
-# coding=utf-8
 """
 
 
@@ -8,13 +7,13 @@
 
 Process finished with exit code 0
 """
-from io import StringIO
+from common.print_utils import Number, Sequence, Table, Text, as_columns, dict_to_table
 
-from common.print_utils import Number, Sequence, Table, Text, print_in_columns
+EXPECTED_ITEMS_MULTIPLE_COLUMNS = """a   c
+b   d"""
 
-EXPECTED_COLUMNS = """a   c
-b   d
-"""
+EXPECTED_ITEMS_NOT_MULTIPLE_COLUMNS = """a   c
+b    """
 
 EXPECTED_SIMPLE_TABLE = """Wooho
 ============================================================================
@@ -28,8 +27,7 @@ EXPECTED_SIMPLE_TABLE = """Wooho
 | Plato III        |      21.00 | d                   | a                  |
 ----------------------------------------------------------------------------
 *name   Name for first column
-*value  VValue
-"""
+*value  VValue"""
 
 EXPECTED_EMPTY_TABLE = """Wooho
 =============================================
@@ -37,15 +35,17 @@ EXPECTED_EMPTY_TABLE = """Wooho
 =============================================
 ---------------------------------------------
 *name   Name for first column
-*value  VValue
-"""
+*value  VValue"""
 
 
-# https://pytest.org/latest/capture.html#accessing-captured-output-from-a-test-function
-def test_print_in_columns(capfd):
-    print_in_columns(["a", "b", "c", "d"], 2)
-    out, err = capfd.readouterr()
-    assert out == EXPECTED_COLUMNS
+def test_as_columns_with_items_multiple_columns():
+    out = as_columns(["a", "b", "c", "d"], 2)
+    assert out == EXPECTED_ITEMS_MULTIPLE_COLUMNS
+
+
+def test_as_columns_with_items_not_multiple_columns():
+    out = as_columns(["a", "b", "c"], 2)
+    assert out == EXPECTED_ITEMS_NOT_MULTIPLE_COLUMNS
 
 
 def make_table():
@@ -65,28 +65,9 @@ def make_table():
     return t
 
 
-def test_table_is_printed():
-    table = make_table()
-    io = StringIO()
-
-    def writer(row):
-        io.write(row)
-        io.write("\n")
-
-    table.print_table(writer)
-    assert io.getvalue() == EXPECTED_SIMPLE_TABLE
-
-
 def test_table_is_converted_to_str():
-    io = StringIO()
-
-    def writer(row):
-        io.write(row)
-        io.write("\n")
-
     table = make_table()
-    table.print_table(writer)
-    assert io.getvalue() == EXPECTED_SIMPLE_TABLE
+    assert str(table) == EXPECTED_SIMPLE_TABLE
 
 
 def test_empty_table():
@@ -97,16 +78,7 @@ def test_empty_table():
         Sequence("zzzzzzzzzzzzzzzzzz"),
         table_name="Wooho",
     )
-
-    io = StringIO()
-
-    def writer(row):
-        io.write(row)
-        io.write("\n")
-
-    empty.print_table(writer)
-
-    assert io.getvalue() == EXPECTED_EMPTY_TABLE
+    assert str(empty) == EXPECTED_EMPTY_TABLE
 
 
 def test_number_column():
@@ -130,4 +102,62 @@ def test_total_is_calculated():
         "============",
         "|  3 |  30 |",
         "============",
+    ]
+
+
+def test_hide_header():
+    table = Table(
+        Number("A", precession=0),
+        Number("B", precession=0),
+        hide_header=True,
+    )
+    table.add_row(1, 10)
+    table.add_row(2, 20)
+    assert list(table) == [
+        "============",
+        "|  1 |  10 |",
+        "|  2 |  20 |",
+        "------------",
+    ]
+
+
+def test_hide_header_with_no_rows():
+    table = Table(
+        Number("A", precession=0),
+        Number("B", precession=0),
+        hide_header=True,
+    )
+    assert list(table) == [
+        "=========",
+        "---------",
+    ]
+
+
+def test_dict_to_table():
+    data = {"1": 10, "2": 20}
+    table = dict_to_table(data)
+
+    assert list(table) == [
+        "==========",
+        "| 1 | 10 |",
+        "| 2 | 20 |",
+        "----------",
+    ]
+
+
+def test_adding_notes():
+    table = Table(
+        Number("A", precession=0),
+        Number("B", precession=0),
+        hide_header=True,
+    )
+    table.add_row(1, 10)
+    table.add_row(2, 20, note="Hello")
+    table.add_row(3, 30, note="  World  ")
+    assert list(table) == [
+        "============",
+        "|  1 |  10 |",
+        "|  2 |  20 |  Hello",
+        "|  3 |  30 |  World",
+        "------------",
     ]

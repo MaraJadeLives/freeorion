@@ -5,7 +5,7 @@ import AIDependencies
 import AIstate
 from AIDependencies import Tags
 from aistate_interface import get_aistate
-from colonization import rate_piloting_tag, special_is_nest
+from colonization import rate_piloting, special_is_nest
 from colonization.calculate_planet_colonization_rating import empire_metabolisms
 from colonization.calculate_population import active_growth_specials
 from common.listeners import register_pre_handler
@@ -36,17 +36,15 @@ register_pre_handler("generateOrders", survey_universe_lock.lock)
 survey_timer = AITimer("empire.surver_universe()")
 
 
-def survey_universe():
+def survey_universe():  # noqa: C901
     survey_timer.start("Categorizing Visible Planets")
     universe = fo.getUniverse()
     empire_id = fo.empireID()
     current_turn = fo.currentTurn()
 
-    # set up / reset various variables; the 'if' is purely for code folding convenience
-    if True:
-        AIstate.empireStars.clear()
-        empire_metabolisms.clear()
-        active_growth_specials.clear()
+    AIstate.empireStars.clear()
+    empire_metabolisms.clear()
+    active_growth_specials.clear()
 
     # var setup done
     aistate = get_aistate()
@@ -63,8 +61,6 @@ def survey_universe():
             planet = universe.getPlanet(pid)
             if not planet:
                 continue
-            if pid in aistate.colonisablePlanetIDs:
-                empire_has_qualifying_planet = True
             if planet.size == fo.planetSize.asteroids:
                 local_ast = True
             elif planet.size == fo.planetSize.gasGiant:
@@ -81,7 +77,7 @@ def survey_universe():
                     for metab in [tag for tag in this_spec.tags if tag in AIDependencies.metabolismBoostMap]:
                         empire_metabolisms[metab] = empire_metabolisms.get(metab, 0.0) + planet.habitableSize
                     if this_spec.canProduceShips:
-                        pilot_val = rate_piloting_tag(spec_name)
+                        pilot_val = rate_piloting(spec_name)
                         weapons_grade = "WEAPONS_%.1f" % pilot_val
                         set_pilot_rating_for_planet(pid, pilot_val)
                         yard_here = []
@@ -177,4 +173,4 @@ def _print_empire_species_roster():
             *[grade_map.get(get_species_tag_grade(species_name, tag).upper(), "o") for tag in grade_tags],
             [tag for tag in species_tags if not any(s in tag for s in grade_tags) and "PEDIA" not in tag],
         )
-    species_table.print_table(info)
+    info(species_table)

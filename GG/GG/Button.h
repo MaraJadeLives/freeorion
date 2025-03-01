@@ -37,7 +37,7 @@ class GG_API Button : public Control
 {
 public:
     /// the states of being for a GG::Button
-    GG_CLASS_ENUM(ButtonState, unsigned char,
+    GG_CLASS_ENUM(ButtonState, uint8_t,
         BN_PRESSED,    ///< The button is being pressed by the user, and the cursor is over the button
         BN_UNPRESSED,  ///< The button is unpressed
         BN_ROLLOVER    ///< The button has the cursor over it, but is unpressed
@@ -46,19 +46,19 @@ public:
     /** Emitted when the button is clicked by the user */
     typedef boost::signals2::signal<void ()> ClickedSignalType;
 
-    Button(std::string str, const std::shared_ptr<Font>& font, Clr color,
+    Button(std::string str, std::shared_ptr<Font> font, Clr color,
            Clr text_color = CLR_BLACK, Flags<WndFlag> flags = INTERACTIVE);
     void CompleteConstruction() override;
 
     Pt MinUsableSize() const override;
 
     /** Returns button state \see ButtonState */
-    ButtonState State() const;
+    ButtonState State() const noexcept { return m_state; }
 
     const std::string& Text() const;             ///< Returns the label to be used as the button label
-    const SubTexture& UnpressedGraphic() const;  ///< Returns the SubTexture to be used as the image of the button when unpressed
-    const SubTexture& PressedGraphic() const;    ///< Returns the SubTexture to be used as the image of the button when pressed
-    const SubTexture& RolloverGraphic() const;   ///< Returns the SubTexture to be used as the image of the button when it contains the cursor, but is not pressed
+    const auto& UnpressedGraphic() const { return m_unpressed_graphic; }
+    const auto& PressedGraphic() const { return m_pressed_graphic; }
+    const SubTexture& RolloverGraphic() const { return m_rollover_graphic; }
 
     /** The left clicked signal object for this Button */
     mutable ClickedSignalType LeftClickedSignal;
@@ -71,30 +71,30 @@ public:
 
     void Show() override;
     void Render() override;
-    void SizeMove(const Pt& ul, const Pt& lr) override;
+    void SizeMove(Pt ul, Pt lr) override;
 
     /** Sets the control's color; does not affect the text color. */
-    void SetColor(Clr c) override;
+    void SetColor(Clr c) noexcept override { Control::SetColor(c); }
 
     /** Sets button state programmatically \see ButtonState */
-    void SetState(ButtonState state);
+    void SetState(ButtonState state) noexcept { m_state = state; }
 
-    void SetText(std::string text);             ///< Sets the text to be used as the button label
-    void SetUnpressedGraphic(SubTexture st);    ///< Sets the SubTexture to be used as the image of the button when unpressed
-    void SetPressedGraphic(SubTexture st);      ///< Sets the SubTexture to be used as the image of the button when pressed
-    void SetRolloverGraphic(SubTexture st);     ///< Sets the SubTexture to be used as the image of the button when it contains the cursor, but is not pressed
+    void SetText(std::string text);                   ///< Sets the text to be used as the button label
+    void SetUnpressedGraphic(SubTexture st) noexcept; ///< Sets the SubTexture to be used as the image of the button when unpressed
+    void SetPressedGraphic(SubTexture st) noexcept;   ///< Sets the SubTexture to be used as the image of the button when pressed
+    void SetRolloverGraphic(SubTexture st) noexcept;  ///< Sets the SubTexture to be used as the image of the button when it contains the cursor, but is not pressed
 
 protected:
-    void LButtonDown(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void LDrag(const Pt& pt, const Pt& move, Flags<ModKey> mod_keys) override;
-    void LButtonUp(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void LClick(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void RButtonDown(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void RDrag(const Pt& pt, const Pt& move, Flags<ModKey> mod_keys) override;
-    void RButtonUp(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void RClick(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void MouseEnter(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void MouseHere(const Pt& pt, Flags<ModKey> mod_keys) override;
+    void LButtonDown(Pt pt, Flags<ModKey> mod_keys) override;
+    void LDrag(Pt pt, Pt move, Flags<ModKey> mod_keys) override;
+    void LButtonUp(Pt pt, Flags<ModKey> mod_keys) override;
+    void LClick(Pt pt, Flags<ModKey> mod_keys) override;
+    void RButtonDown(Pt pt, Flags<ModKey> mod_keys) override;
+    void RDrag(Pt pt, Pt move, Flags<ModKey> mod_keys) override;
+    void RButtonUp(Pt pt, Flags<ModKey> mod_keys) override;
+    void RClick(Pt pt, Flags<ModKey> mod_keys) override;
+    void MouseEnter(Pt pt, Flags<ModKey> mod_keys) override;
+    void MouseHere(Pt pt, Flags<ModKey> mod_keys) override;
     void MouseLeave() override;
 
     /** Draws the button unpressed.  If an unpressed graphic has been supplied, it is used. */
@@ -124,7 +124,7 @@ class StateButtonRepresenter;
 
     This class is for checkboxes and radio buttons, etc.  The button/checkbox
     area is determined from the text height and format; the button height and
-    width will be the text height, and the the button will be positioned to
+    width will be the text height, and the button will be positioned to
     the left of the text and vertically the same as the text, unless the text
     is centered, in which case the button and text will be centered, and the
     button will appear above or below the text.  Whenever there is not room to
@@ -135,7 +135,7 @@ class GG_API StateButton : public Control
 {
 public:
     /// the states of being for a GG::Button
-    GG_CLASS_ENUM(ButtonState, unsigned char,
+    GG_CLASS_ENUM(ButtonState, uint8_t,
         BN_PRESSED,    ///< The button is being pressed by the user, and the cursor is over the button
         BN_UNPRESSED,  ///< The button is unpressed
         BN_ROLLOVER    ///< The button has the cursor over it, but is unpressed
@@ -153,11 +153,11 @@ public:
     Pt                  MinUsableSize() const override;
 
     /** Returns button state \see ButtonState */
-    ButtonState         State() const;
+    ButtonState         State() const noexcept { return m_state; }
 
-    const std::string&  Text() const;        ///< Returns the label to be used as the button label
+    const std::string&  Text() const noexcept { return m_label->Text(); }
 
-    bool                Checked() const;       ///< Returns true if button is checked
+    bool                Checked() const noexcept { return m_checked; }
 
     TextControl*        GetLabel() const;
 
@@ -165,18 +165,18 @@ public:
 
     void Show() override;
     void Render() override;
-    void SizeMove(const Pt& ul, const Pt& lr) override;
+    void SizeMove(Pt ul, Pt lr) override;
 
     void Reset();                 ///< Unchecks button
     void SetCheck(bool b = true); ///< (Un)checks button
     void SetTextColor(Clr c); ///< Sets the color of the box label text
 
 protected:
-    void LButtonDown(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void LDrag(const Pt& pt, const Pt& move, Flags<ModKey> mod_keys) override;
-    void LButtonUp(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void LClick(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void MouseHere(const Pt& pt, Flags<ModKey> mod_keys) override;
+    void LButtonDown(Pt pt, Flags<ModKey> mod_keys) override;
+    void LDrag(Pt pt, Pt move, Flags<ModKey> mod_keys) override;
+    void LButtonUp(Pt pt, Flags<ModKey> mod_keys) override;
+    void LClick(Pt pt, Flags<ModKey> mod_keys) override;
+    void MouseHere(Pt pt, Flags<ModKey> mod_keys) override;
     void MouseLeave() override;
 
     /** Sets button state programmatically \see ButtonState */
@@ -206,9 +206,9 @@ public:
 
         \param button The StateButton instance to render.
      */
-    virtual void Render(const StateButton& button) const;
+    virtual void Render(const StateButton& button) const {}
 
-    /** \brief Respong to a button state change.
+    /** \brief Respond to a button state change.
 
         This method is called whenever a Button chanes its state.
 
@@ -216,7 +216,7 @@ public:
                        recent state.
         \param previous_state  The previous button state.
      */
-    virtual void OnChanged(const StateButton& button, StateButton::ButtonState previous_state) const;
+    virtual void OnChanged(const StateButton& button, StateButton::ButtonState previous_state) const {}
 
     /** \brief Respond to a state button change.
 
@@ -226,7 +226,7 @@ public:
         \param checked True if the state button was checked, False
                        if not.
      */
-    virtual void OnChecked(bool checked) const;
+    virtual void OnChecked(bool checked) const {}
 
     /** \brief Return the minimum size required for a usable representation
 
@@ -308,33 +308,33 @@ public:
     Pt MinUsableSize() const override;
 
     /** Returns the orientation of the buttons in the group */
-    Orientation      GetOrientation() const;
+    Orientation      GetOrientation() const noexcept { return m_orientation; }
 
     /** Returns true iff NumButtons() == 0 */
-    bool             Empty() const;
+    bool             Empty() const noexcept { return m_button_slots.empty(); }
 
     /** Returns the number of buttons in this control */
-    std::size_t      NumButtons() const;
+    std::size_t      NumButtons() const noexcept { return m_button_slots.size(); }
 
     /** Returns the index of the currently checked button, or NO_BUTTON if
         none are checked */
-    std::size_t      CheckedButton() const;
+    std::size_t      CheckedButton() const noexcept { return m_checked_button; }
 
     /** Returns true iff the buttons in the group are to be expanded to fill
         the group's available space.  If false, this indicates that the
         buttons are to be spaced out evenly, and that they should all be their
         MinUsableSize()s. */
-    bool             ExpandButtons() const;
+    bool             ExpandButtons() const noexcept { return m_expand_buttons; }
 
     /** Returns true iff the buttons in the group are to be expanded in
         proportion to their initial sizes.  If false, this indicates that the
         buttons are to be expanded evenly.  Note that this has no effect if
         ExpandButtons() is false. */
-    bool             ExpandButtonsProportionally() const;
+    bool             ExpandButtonsProportionally() const noexcept { return m_expand_buttons_proportionally; }
 
     /** Returns true iff this button group will render an outline of itself;
         this is sometimes useful for debugging purposes */
-    bool             RenderOutline() const;
+    bool             RenderOutline() const noexcept { return m_render_outline; }
 
     mutable ButtonChangedSignalType ButtonChangedSignal; ///< The button changed signal object for this RadioButtonGroup
 
@@ -380,7 +380,7 @@ public:
 
     /** Set this to true if this button group should render an outline of
         itself; this is sometimes useful for debugging purposes */
-    void RenderOutline(bool render_outline);
+    void RenderOutline(bool render_outline) noexcept { m_render_outline = render_outline; }
 
     /** Raises the currently-selected button to the top of the child z-order.
         If there is no currently-selected button, no action is taken. */
@@ -395,14 +395,15 @@ protected:
         RadioButtonGroup. */
     struct GG_API ButtonSlot
     {
-        ButtonSlot(std::shared_ptr<StateButton> button_);
+        ButtonSlot(std::shared_ptr<StateButton> button_) noexcept :
+            button(std::move(button_))
+        {}
 
         std::shared_ptr<StateButton> button;
-
         boost::signals2::scoped_connection connection;
     };
 
-    const std::vector<ButtonSlot>& ButtonSlots() const; ///< returns the state buttons in the group
+    const std::vector<ButtonSlot>& ButtonSlots() const noexcept { return m_button_slots; }
 
 private:
     void ConnectSignals();
@@ -411,10 +412,10 @@ private:
 
     const Orientation       m_orientation;
     std::vector<ButtonSlot> m_button_slots;
-    std::size_t             m_checked_button; ///< the index of the currently-checked button; NO_BUTTON if none is clicked
-    bool                    m_expand_buttons;
-    bool                    m_expand_buttons_proportionally;
-    bool                    m_render_outline;
+    std::size_t             m_checked_button = NO_BUTTON; ///< the index of the currently-checked button; NO_BUTTON if none is clicked
+    bool                    m_expand_buttons = false;
+    bool                    m_expand_buttons_proportionally = false;
+    bool                    m_render_outline = false;
 };
 
 }

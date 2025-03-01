@@ -1,15 +1,33 @@
-from common.base_prod import TECH_COST_MULTIPLIER
-from common.priorities import TARGET_POPULATION_BEFORE_SCALING_PRIORITY
+from focs._effects import (
+    EffectsGroup,
+    HasTag,
+    Hostile,
+    OwnedBy,
+    Planet,
+    Poor,
+    SetTargetPopulation,
+    Source,
+    StatisticIf,
+    Target,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER
+from macros.priorities import TARGET_POPULATION_BEFORE_SCALING_PRIORITY
 
 Tech(
     name="GRO_XENO_HYBRIDS",
     description="GRO_XENO_HYBRIDS_DESC",
     short_description="POPULATION_SHORT_DESC",
     category="GROWTH_CATEGORY",
-    researchcost=150 * TECH_COST_MULTIPLIER,
+    researchcost=(
+        240
+        * TECH_COST_MULTIPLIER
+        / (1 + StatisticIf(float, condition=OwnedBy(empire=Source.Owner) & HasTag(name="ADAPTIVE")))
+    ),
     researchturns=10,
     tags=["PEDIA_GROWTH_CATEGORY"],
-    prerequisites="GRO_XENO_GENETICS",
+    prerequisites=["GRO_XENO_GENETICS"],
     effectsgroups=[
         EffectsGroup(
             scope=Planet() & OwnedBy(empire=Source.Owner) & Planet(environment=[Poor]),

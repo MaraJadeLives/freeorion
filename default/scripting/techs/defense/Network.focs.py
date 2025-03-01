@@ -1,6 +1,18 @@
-from common.base_prod import TECH_COST_MULTIPLIER
-from common.misc import PLANET_DEFENSE_FACTOR
-from common.priorities import DEFAULT_PRIORITY
+from focs._effects import (
+    EffectsGroup,
+    MaxOf,
+    OwnedBy,
+    Planet,
+    SetDefense,
+    SetMaxDefense,
+    Source,
+    Target,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER
+from macros.misc import PLANET_DEFENSE_FACTOR
+from macros.priorities import DEFAULT_PRIORITY
 
 
 def EG_DEFENSE_NET(multiplier: int, stack_postfix: str):
@@ -18,10 +30,10 @@ Tech(
     description="DEF_DEFENSE_NET_1_DESC",
     short_description="DEFENSE_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=16 * TECH_COST_MULTIPLIER,
+    researchcost=30 * TECH_COST_MULTIPLIER,
     researchturns=3,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_ROOT_DEFENSE",
+    prerequisites=["DEF_ROOT_DEFENSE"],
     effectsgroups=[EG_DEFENSE_NET(5, "1")],
     graphic="icons/tech/defense.png",
 )
@@ -31,10 +43,10 @@ Tech(
     description="DEF_DEFENSE_NET_2_DESC",
     short_description="DEFENSE_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=80 * TECH_COST_MULTIPLIER,
+    researchcost=96 * TECH_COST_MULTIPLIER,
     researchturns=4,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_DEFENSE_NET_1",
+    prerequisites=["DEF_DEFENSE_NET_1"],
     effectsgroups=[EG_DEFENSE_NET(15, "2")],
     graphic="icons/tech/defense.png",
 )
@@ -44,10 +56,10 @@ Tech(
     description="DEF_DEFENSE_NET_3_DESC",
     short_description="DEFENSE_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=160 * TECH_COST_MULTIPLIER,
+    researchcost=240 * TECH_COST_MULTIPLIER,
     researchturns=6,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_DEFENSE_NET_2",
+    prerequisites=["DEF_DEFENSE_NET_2"],
     effectsgroups=[EG_DEFENSE_NET(25, "3")],
     graphic="icons/tech/defense.png",
 )
@@ -57,10 +69,10 @@ Tech(
     description="DEF_DEFENSE_NET_REGEN_1_DESC",
     short_description="DEFENSE_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=60 * TECH_COST_MULTIPLIER,
+    researchcost=120 * TECH_COST_MULTIPLIER,
     researchturns=6,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_DEFENSE_NET_2",
+    prerequisites=["DEF_DEFENSE_NET_2"],
     effectsgroups=[
         EffectsGroup(
             scope=Planet() & OwnedBy(empire=Source.Owner),
@@ -76,10 +88,10 @@ Tech(
     description="DEF_DEFENSE_NET_REGEN_2_DESC",
     short_description="DEFENSE_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=160 * TECH_COST_MULTIPLIER,
+    researchcost=240 * TECH_COST_MULTIPLIER,
     researchturns=8,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_DEFENSE_NET_REGEN_1",
+    prerequisites=["DEF_DEFENSE_NET_REGEN_1"],
     effectsgroups=[
         EffectsGroup(
             scope=Planet() & OwnedBy(empire=Source.Owner),

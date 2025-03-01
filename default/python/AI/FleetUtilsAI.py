@@ -1,7 +1,8 @@
 import freeOrionAIInterface as fo
 import math
+from collections.abc import Sequence
 from logging import debug, error, warning
-from typing import List, Sequence, Set, Tuple, Union
+from typing import Union
 
 import AIDependencies
 import MoveUtilsAI
@@ -9,6 +10,8 @@ from AIDependencies import INVALID_ID
 from aistate_interface import get_aistate
 from CombatRatingsAI import get_fleet_rating, get_ship_combat_stats, rating_needed
 from common.fo_typing import PlanetId
+from common.print_utils import Sequence as SequenceField
+from common.print_utils import Table, Text
 from EnumsAI import MissionType, ShipRoleType
 from freeorion_tools import assertion_fails, combine_ratings
 from ShipDesignAI import get_ship_part
@@ -53,7 +56,7 @@ def count_troops_in_fleet(fleet_id: int) -> float:
     return fleet_troop_capacity
 
 
-def get_targeted_planet_ids(planet_ids: Sequence[PlanetId], mission_type: MissionType) -> List[PlanetId]:
+def get_targeted_planet_ids(planet_ids: Sequence[PlanetId], mission_type: MissionType) -> list[PlanetId]:
     """Find the planets that are targets of the specified mission type.
 
     :param planet_ids: planets to be queried
@@ -73,16 +76,16 @@ def get_targeted_planet_ids(planet_ids: Sequence[PlanetId], mission_type: Missio
 
 # TODO: Avoid mutable arguments and use return values instead
 # TODO: Use Dijkstra's algorithm instead of BFS to consider starlane length
-def get_fleets_for_mission(
+def get_fleets_for_mission(  # noqa: C901
     target_stats: dict,
     min_stats: dict,
     cur_stats: dict,
     starting_system: int,
-    fleet_pool_set: Set[int],
-    fleet_list: List[int],
+    fleet_pool_set: set[int],
+    fleet_list: list[int],
     species: str = "",
     ensure_return: bool = False,
-) -> List[int]:
+) -> list[int]:
     """Get fleets for a mission.
 
     Implements breadth-first search through systems starting at the **starting_sytem**.
@@ -200,7 +203,7 @@ def get_fleets_for_mission(
         return []
 
 
-def split_fleet(fleet_id: int) -> List[int]:
+def split_fleet(fleet_id: int) -> list[int]:
     """Split a fleet into its ships.
 
     :param fleet_id: fleet to be split.
@@ -376,7 +379,7 @@ def extract_fleet_ids_without_mission_types(fleets_ids):
     return [fleet_id for fleet_id in fleets_ids if not aistate.get_fleet_mission(fleet_id).type]
 
 
-def assess_fleet_role(fleet_id):
+def assess_fleet_role(fleet_id):  # noqa: C901
     """
     Assesses ShipRoles represented in a fleet and
     returns a corresponding overall fleetRole (of type MissionType).
@@ -432,7 +435,7 @@ def assess_fleet_role(fleet_id):
     return selected_role
 
 
-def assess_ship_design_role(design):
+def assess_ship_design_role(design):  # noqa: C901
     parts = [get_ship_part(partname) for partname in design.parts if partname and get_ship_part(partname)]
 
     if any(p.partClass == fo.shipPartClass.colony and p.capacity == 0 for p in parts):
@@ -454,7 +457,13 @@ def assess_ship_design_role(design):
             return ShipRoleType.BASE_INVASION
 
     if design.speed == 0:
-        if not parts or parts[0].partClass == fo.shipPartClass.shields:  # ToDo: Update logic for new ship designs
+        if not parts or parts[0].partClass in (
+            fo.shipPartClass.shortRange,
+            fo.shipPartClass.fighterBay,
+            fo.shipPartClass.fighterHangar,
+            fo.shipPartClass.shields,
+            fo.shipPartClass.armour,
+        ):
             return ShipRoleType.BASE_DEFENSE
         else:
             return ShipRoleType.INVALID
@@ -468,24 +477,28 @@ def assess_ship_design_role(design):
         return ShipRoleType.CIVILIAN_EXPLORATION
 
 
-def generate_fleet_orders_for_fleet_missions():
+def generate_fleet_orders_for_fleet_missions():  # noqa: C901
     """Generates fleet orders from targets."""
     debug("Generating fleet orders")
 
+    table = Table(Text("name"), SequenceField("values"), hide_header=True, table_name="Fleets by Role")
+
     # The following fleet lists are based on *Roles* -- Secure type missions are done by fleets with Military Roles
-    debug("Fleets by Role\n")
-    debug("Exploration Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.EXPLORATION))
-    debug("Colonization Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.COLONISATION))
-    debug("Outpost Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.OUTPOST))
-    debug("Invasion Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.INVASION))
-    debug("Military Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.MILITARY))
-    debug("Orbital Defense Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.ORBITAL_DEFENSE))
-    debug("Outpost Base Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.ORBITAL_OUTPOST))
-    debug("Invasion Base Fleets: %s" % get_empire_fleet_ids_by_role(MissionType.ORBITAL_INVASION))
-    debug(
-        "Securing Fleets: %s  (currently FLEET_MISSION_MILITARY should be used instead of this Role)"
-        % (get_empire_fleet_ids_by_role(MissionType.SECURE))
+    table.add_row("Exploration", get_empire_fleet_ids_by_role(MissionType.EXPLORATION))
+    table.add_row("Colonization", get_empire_fleet_ids_by_role(MissionType.COLONISATION))
+    table.add_row("Outpost", get_empire_fleet_ids_by_role(MissionType.OUTPOST))
+    table.add_row("Invasion", get_empire_fleet_ids_by_role(MissionType.INVASION))
+    table.add_row("Military", get_empire_fleet_ids_by_role(MissionType.MILITARY))
+    table.add_row("Orbital Defense", get_empire_fleet_ids_by_role(MissionType.ORBITAL_DEFENSE))
+    table.add_row("Outpost Base", get_empire_fleet_ids_by_role(MissionType.ORBITAL_OUTPOST))
+    table.add_row("Invasion Base", get_empire_fleet_ids_by_role(MissionType.ORBITAL_INVASION))
+    table.add_row(
+        "Securing",
+        get_empire_fleet_ids_by_role(MissionType.SECURE),
+        note="currently MissionType.MILITARY should be used instead of this role",
     )
+
+    debug(table)
 
     aistate = get_aistate()
     if fo.currentTurn() < 50:
@@ -615,15 +628,14 @@ def _print_systems_and_supply(system_ids):
     for system_id in system_ids:
         system = universe.getSystem(system_id)
         debug(
-            "  %s%s"
-            % (
+            "  {}{}".format(
                 system if system else "  S_%s<>" % system_id,
                 "supplied" if system_id in fleet_supplyable_system_ids else "",
             )
         )
 
 
-def get_fighter_capacity_of_fleet(fleet_id: int) -> Tuple[int, int]:
+def get_fighter_capacity_of_fleet(fleet_id: int) -> tuple[int, int]:
     """
     Return current and max fighter capacity.
     """
@@ -641,26 +653,6 @@ def get_fighter_capacity_of_fleet(fleet_id: int) -> Tuple[int, int]:
                 cur_capacity += ship.currentPartMeterValue(fo.meterType.capacity, partname)
                 max_capacity += ship.currentPartMeterValue(fo.meterType.maxCapacity, partname)
     return cur_capacity, max_capacity
-
-
-def get_fuel(fleet_id: int) -> float:
-    """Get fuel of fleet.
-
-    :param fleet_id: Queried fleet
-    :return: fuel of fleet
-    """
-    fleet = fo.getUniverse().getFleet(fleet_id)
-    return fleet and fleet.fuel or 0.0
-
-
-def get_max_fuel(fleet_id: int) -> float:
-    """Get maximum fuel capacity of fleet.
-
-    :param fleet_id: Queried fleet
-    :return: max fuel of fleet
-    """
-    fleet = fo.getUniverse().getFleet(fleet_id)
-    return fleet and fleet.maxFuel or 0.0
 
 
 def get_fleet_upkeep():
@@ -684,7 +676,7 @@ def get_fleet_system(fleet: Union[TargetFleet, int]) -> int:
     return fleet.systemID if fleet.systemID != INVALID_ID else fleet.nextSystemID
 
 
-def get_current_and_max_structure(fleet: int) -> Tuple[float, float]:
+def get_current_and_max_structure(fleet: int) -> tuple[float, float]:
     """Return a 2-tuple of the sums of structure and maxStructure meters of all ships in the fleet."""
 
     universe = fo.getUniverse()

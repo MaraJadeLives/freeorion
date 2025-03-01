@@ -4,21 +4,22 @@
 #include "CUIWnd.h"
 
 /** Lets the player design ships */
-class GovernmentWnd : public CUIWnd {
+class GovernmentWnd final : public CUIWnd {
 public:
     explicit GovernmentWnd(std::string_view config_name = "");
     void CompleteConstruction() override;
 
-    void SizeMove(const GG::Pt& ul, const GG::Pt& lr) override;
+    void SizeMove(GG::Pt ul, GG::Pt lr) override;
 
     void ClearPolicies();
     void RevertPolicies();
     void Reset();
     void Sanitize();
     void Refresh();
-    double GetPolicyZoomFactor();   // returns zoom factor for policy cards
-    GG::Pt GetPolicySlotSize();     // returns policy slot size with zoom factor applied
-    int    GetPolicyTextSize();     // returns policy text size with zoom factor applied
+
+    double GetPolicyZoomFactor() const; // zoom factor for policy cards
+    GG::Pt GetPolicySlotSize() const;   // policy slot size with zoom factor applied
+    int    GetPolicyTextSize() const;   // policy text size with zoom factor applied
 
     /** Enables, or disables if \a enable is false, issuing orders via this DesignWnd. */
     void EnableOrderIssuing(bool enable = true);

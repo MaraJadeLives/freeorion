@@ -3,10 +3,15 @@
 #include "ClientAppFixture.h"
 #include "Empire/Empire.h"
 #include "universe/Planet.h"
-#include "universe/UniverseObjectVisitors.h"
+#include "universe/Ship.h"
+#include "universe/ShipDesign.h"
 #include "util/Directories.h"
+#include "util/Order.h"
 #include "util/Process.h"
 #include "util/SitRepEntry.h"
+
+#include <boost/uuid/uuid_io.hpp>
+#include <boost/uuid/string_generator.hpp>
 
 #ifdef FREEORION_MACOSX
 #include <stdlib.h>
@@ -71,7 +76,7 @@ BOOST_AUTO_TEST_CASE(host_server) {
     BOOST_TEST_MESSAGE("First messages processed. Starting game...");
 
     unsigned int num_AIs = 2;
-    int num_turns = 3;
+    int num_turns = 5;
     bool save_game = true;
 
     const char *env_num_AIs = std::getenv("FO_TEST_GAME_AIS");
@@ -115,11 +120,13 @@ BOOST_AUTO_TEST_CASE(host_server) {
     BOOST_TEST_MESSAGE("Game started. Waiting AI for turns...");
 
     start_time = boost::posix_time::microsec_clock::local_time();
-    while (! m_ai_waiting.empty()) {
+    while (!m_ai_waiting.empty()) {
         BOOST_REQUIRE(ProcessMessages(start_time, MAX_WAITING_SEC));
     }
 
     SaveGameUIData ui_data;
+
+    int troop_design_id = INVALID_DESIGN_ID;
 
     while (m_current_turn <= num_turns) {
         SendPartialOrders();
@@ -138,27 +145,67 @@ BOOST_AUTO_TEST_CASE(host_server) {
         BOOST_TEST_MESSAGE("Turn updated " << m_current_turn);
 
         // output sitreps
-        const auto& my_empire = m_empires.GetEmpire(m_empire_id);
+        auto my_empire = m_empires.GetEmpire(m_empire_id);
         BOOST_REQUIRE(my_empire != nullptr);
-        for (auto sitrep_it = my_empire->SitRepBegin(); sitrep_it != my_empire->SitRepEnd(); ++sitrep_it) {
-            if (sitrep_it->GetTurn() == m_current_turn) {
-                BOOST_TEST_MESSAGE("Sitrep: " << sitrep_it->Dump());
+        for (const auto& sitrep : my_empire->SitReps()) {
+            if (sitrep.GetTurn() == m_current_turn) {
+                BOOST_TEST_MESSAGE("Sitrep: " << sitrep.Dump());
             }
         }
 
+        const auto is_owned = [this](const UniverseObject* obj) noexcept { return obj->OwnedBy(m_empire_id); };
+
         if (m_current_turn == 2) {
             // check home planet meters
-            bool found_planet = false;
-            for (const auto& planet : Objects().find<Planet>(OwnedVisitor(m_empire_id))) {
+            const Planet* home_planet = nullptr;
+
+            for (const auto* planet : m_universe.Objects().findRaw<Planet>(is_owned)) {
                 BOOST_REQUIRE_LT(0.0, planet->GetMeter(MeterType::METER_POPULATION)->Current());
                 BOOST_TEST_MESSAGE("Population: " << planet->GetMeter(MeterType::METER_POPULATION)->Current());
                 BOOST_REQUIRE_LT(0.0, planet->GetMeter(MeterType::METER_INDUSTRY)->Current());
                 BOOST_TEST_MESSAGE("Industry: " << planet->GetMeter(MeterType::METER_INDUSTRY)->Current());
                 BOOST_REQUIRE_LT(0.0, planet->GetMeter(MeterType::METER_RESEARCH)->Current());
                 BOOST_TEST_MESSAGE("Research: " << planet->GetMeter(MeterType::METER_RESEARCH)->Current());
-                found_planet = true;
+                home_planet = planet;
             }
-            BOOST_REQUIRE(found_planet);
+            BOOST_REQUIRE(home_planet != nullptr);
+
+            // enqueue Troop Ship
+            static const boost::uuids::uuid troop_ship_uuid =
+                boost::uuids::string_generator{}("08a58b080929496d84fcfaa91424ca02");
+
+            for (const auto* design : GetPredefinedShipDesignManager().GetOrderedShipDesigns()) {
+                BOOST_TEST_MESSAGE("Predefined ship design " << design->Name() << " " << design->UUID());
+                if (design->UUID() == troop_ship_uuid) {
+                    BOOST_REQUIRE_EQUAL(troop_design_id, INVALID_DESIGN_ID);
+                    troop_design_id = my_empire->AddShipDesign(*design, m_universe);
+                    BOOST_REQUIRE_NE(troop_design_id, INVALID_DESIGN_ID);
+                    BOOST_TEST_MESSAGE("Found predefined troop ship design " << troop_design_id << " " << design->Name() << " " << design->UUID());
+                }
+            }
+
+            BOOST_REQUIRE_NE(troop_design_id, INVALID_DESIGN_ID);
+
+            BOOST_REQUIRE(my_empire->ProducibleItem(BuildType::BT_SHIP, troop_design_id, home_planet->ID(), m_context));
+
+            m_orders.IssueOrder<ProductionQueueOrder>(
+                m_context,
+                ProductionQueueOrder::ProdQueueOrderAction::PLACE_IN_QUEUE,
+                m_empire_id,
+                ProductionQueue::ProductionItem(BuildType::BT_SHIP, troop_design_id, m_universe),
+                1,
+                home_planet->ID());
+        }
+
+        if (m_current_turn > 2) {
+            if (my_empire->GetProductionQueue().empty()) {
+                for (const auto* ship : m_universe.Objects().findRaw<Ship>(is_owned)) {
+                    if (ship->DesignID() == troop_design_id) {
+                        BOOST_TEST_MESSAGE("Found troop ship with troops " << ship->TroopCapacity(m_universe));
+                        BOOST_REQUIRE_GT(ship->TroopCapacity(m_universe), 0.0f);
+                    }
+                }
+            }
         }
 
         if (my_empire->Eliminated()) {
@@ -166,7 +213,7 @@ BOOST_AUTO_TEST_CASE(host_server) {
             break;
         }
         bool have_winner = false;
-        for (auto empire : m_empires) {
+        for (auto& empire : m_empires) {
             if (empire.second->Won()) {
                 have_winner = true;
                 break;
@@ -179,7 +226,7 @@ BOOST_AUTO_TEST_CASE(host_server) {
 
         BOOST_TEST_MESSAGE("Waiting AI for turns...");
         start_time = boost::posix_time::microsec_clock::local_time();
-        while (! m_ai_waiting.empty()) {
+        while (!m_ai_waiting.empty()) {
             BOOST_REQUIRE(ProcessMessages(start_time, MAX_WAITING_SEC));
         }
 
@@ -188,7 +235,7 @@ BOOST_AUTO_TEST_CASE(host_server) {
 
             SaveGame();
             start_time = boost::posix_time::microsec_clock::local_time();
-            while (! m_save_completed) {
+            while (!m_save_completed) {
                 BOOST_REQUIRE(ProcessMessages(start_time, MAX_WAITING_SEC));
             }
         }

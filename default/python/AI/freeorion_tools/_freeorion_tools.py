@@ -1,4 +1,3 @@
-# This Python file uses the following encoding: utf-8
 import freeOrionAIInterface as fo
 import inspect
 import pprint
@@ -7,9 +6,11 @@ import traceback
 from collections.abc import Mapping
 from functools import wraps
 from logging import ERROR, Handler, debug, error, getLogger, warning
+from typing import Optional
 
 import AIDependencies
 from common.configure_logging import FOLogFormatter
+from common.fo_typing import SpeciesName
 from freeorion_tools.caching import cache_for_current_turn, cache_for_session
 
 # color wrappers for chat:
@@ -147,21 +148,6 @@ def chat_human(message, send_to_logs=True):
     fo.sendChatMessage(human_id, message)
     if send_to_logs:
         debug("Chat Message to human: %s", remove_tags(message))
-
-
-def dict_to_tuple(dic):
-    return tuple(dic.items())
-
-
-def tuple_to_dict(tup):
-    try:
-        return dict(tup)
-    except TypeError:
-        try:
-            return {k: v for k, v in [tup]}
-        except:  # noqa: E722
-            error("Can't convert tuple_list to dict: %s", tup)
-            return {}
 
 
 @cache_for_current_turn
@@ -307,13 +293,13 @@ def assertion_fails(cond: bool, msg: str = "") -> bool:
     warning("Stack trace (most recent call last): %s", "".join(traceback.format_list(stack)))
     frame = inspect.currentframe().f_back
     local_vars = pprint.pformat(frame.f_locals)
-    warning("Locals inside the {}\n{}".format(frame.f_code.co_name, local_vars))
+    warning(f"Locals inside the {frame.f_code.co_name}\n{local_vars}")
     warning("===\n")
     return True
 
 
 @cache_for_session
-def get_species_tag_grade(species_name: str, tag_type: AIDependencies.Tags) -> str:
+def get_species_tag_grade(species_name: Optional[SpeciesName], tag_type: AIDependencies.Tags) -> str:
     """Determine grade string ("NO", "BAD", "GOOD", etc.), if any, for given tag and species."""
     if not species_name:
         return ""
@@ -325,55 +311,61 @@ def get_species_tag_grade(species_name: str, tag_type: AIDependencies.Tags) -> s
 
 
 @cache_for_session
-def get_species_stealth(species_name: str) -> float:
+def get_species_stealth(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.STEALTH)
     return AIDependencies.STEALTH_STRENGTHS_BY_SPECIES_TAG.get(grade, 0.0)
 
 
 @cache_for_session
-def get_species_attack_troops(species_name: str) -> float:
+def get_species_attack_troops(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.ATTACKTROOPS)
     return AIDependencies.SPECIES_TROOP_MODIFIER.get(grade, 1.0)
 
 
 @cache_for_session
-def get_species_fuel(species_name: str) -> float:
+def get_species_fuel(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.FUEL)
     return AIDependencies.SPECIES_FUEL_MODIFIER.get(grade, 0.0)
 
 
 @cache_for_session
-def get_species_stability(species_name: str) -> float:
+def get_species_ship_shields(species_name: Optional[SpeciesName]) -> float:
+    grade = get_species_tag_grade(species_name, AIDependencies.Tags.SHIP_SHIELDS)
+    return AIDependencies.SPECIES_SHIP_SHIELD_MODIFIER.get(grade, 0.0)
+
+
+@cache_for_session
+def get_species_stability(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.STABILITY)
     return AIDependencies.SPECIES_STABILITY_MODIFIER.get(grade, 0.0)
 
 
 @cache_for_session
-def get_species_supply(species_name: str) -> int:
+def get_species_supply(species_name: Optional[SpeciesName]) -> int:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.SUPPLY)
     return int(AIDependencies.SPECIES_SUPPLY_MODIFIER.get(grade, 1))
 
 
 @cache_for_session
-def get_species_population(species_name: str) -> float:
+def get_species_population(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.POPULATION)
     return AIDependencies.SPECIES_POPULATION_MODIFIER.get(grade, 1.0)
 
 
 @cache_for_session
-def get_species_influence(species_name: str) -> float:
+def get_species_influence(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.INFLUENCE)
     return AIDependencies.SPECIES_INFLUENCE_MODIFIER.get(grade, 1.0)
 
 
 @cache_for_session
-def get_species_research(species_name: str) -> float:
+def get_species_research(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.RESEARCH)
     return AIDependencies.SPECIES_RESEARCH_MODIFIER.get(grade, 1.0)
 
 
 @cache_for_session
-def get_species_industry(species_name: str) -> float:
+def get_species_industry(species_name: Optional[SpeciesName]) -> float:
     grade = get_species_tag_grade(species_name, AIDependencies.Tags.INDUSTRY)
     return AIDependencies.SPECIES_INDUSTRY_MODIFIER.get(grade, 1.0)
 
@@ -418,3 +410,28 @@ def get_named_real(name: str) -> float:
         return fo.getNamedReal(name)
     error(f"Requested integer {name} does not exist!")
     return 1.0
+
+
+def get_game_rule_int(name: str, default: int) -> int:
+    """
+    Returns an integer value for a game rule.
+    If the current game does not include the rule, the default value is returned.
+    Note that unlike named values, which should always exists unless someone changes the scripting without adapting
+    the AI, game rules are set when a game is started. When loading old game with a newer version, the scripting
+    will use the default values of game rules not found in the save file.
+    """
+    rules = fo.getGameRules()
+    if rules.ruleExistsWithType(name, fo.ruleType.int):
+        return rules.getInt(name)
+    return default
+
+
+def get_game_rule_real(name: str, default: int) -> float:
+    """
+    Returns a real value for a game rule.
+    If the current game does not include the rule, the default value is returned. See also get_game_rule_int.
+    """
+    rules = fo.getGameRules()
+    if rules.ruleExistsWithType(name, fo.ruleType.double):
+        return rules.getDouble(name)
+    return default

@@ -72,6 +72,7 @@ void FreeOrionNode::_register_methods() {
 
     register_method("new_single_player_game", &FreeOrionNode::new_single_player_game);
     register_method("network_thread", &FreeOrionNode::network_thread);
+    register_method("start_network_thread", &FreeOrionNode::start_network_thread);
     register_method("get_version", &FreeOrionNode::get_version);
     register_method("is_server_connected", &FreeOrionNode::is_server_connected);
     register_method("connect_to_server", &FreeOrionNode::connect_to_server);
@@ -164,7 +165,6 @@ void FreeOrionNode::_init() {
 
     m_network_thread = godot::Ref<godot::Thread>();
     m_network_thread.instance();
-    m_network_thread->start(this, "network_thread");
 }
 
 
@@ -273,11 +273,11 @@ void FreeOrionNode::HandleMessage(Message&& msg) {
             break;
         }
         case Message::MessageType::ERROR_MSG: {
-            std::string problem;
-            bool fatal;
-            int player_id;
-            ExtractErrorMessageData(msg, player_id, problem, fatal);
-            emit_signal("error", godot::String(problem.c_str()), fatal);
+            std::string problem_key, unlocalized_info;
+            bool fatal = false;
+            int player_id = Networking::INVALID_PLAYER_ID;
+            ExtractErrorMessageData(msg, player_id, problem_key, unlocalized_info, fatal);
+            emit_signal("error", godot::String(problem_key.c_str()), fatal);
             break;
         }
         case Message::MessageType::CHAT_HISTORY: {
@@ -332,6 +332,12 @@ void FreeOrionNode::HandleMessage(Message&& msg) {
 
             break;
         }
+        case Message::MessageType::CHECKSUM: {
+            bool result = this->m_app->VerifyCheckSum(msg);
+            if (!result)
+                emit_signal("error", godot::String(UserString("ERROR_CHECKSUM_MISMATCH").c_str()), false);
+            break;
+        }
         default:
             std::ostringstream stream;
             stream << msg.Type();
@@ -353,6 +359,10 @@ void FreeOrionNode::network_thread() {
         }
     }
     DebugLogger() << "FreeOrionNode::network_thread(): Freeorion networking stopped";
+}
+
+void FreeOrionNode::start_network_thread() {
+    m_network_thread->start(this, "network_thread");   
 }
 
 void FreeOrionNode::new_single_player_game() {
@@ -417,7 +427,7 @@ void FreeOrionNode::options_set(godot::String option, godot::Variant value) {
     std::string option8 = option.utf8().get_data();
     switch (value.get_type()) {
     case godot::Variant::Type::STRING:
-        GetOptionsDB().Set<std::string>(option8, godot::String(value).utf8().get_data());
+        GetOptionsDB().Set<std::string>(option8, value.operator godot::String().utf8().get_data());
         break;
     default:
         ErrorLogger() << "Unsupported option " << option8 << " type " << value.get_type();

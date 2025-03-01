@@ -11,14 +11,14 @@
 
 namespace {
     // sorted pair, so order of empire IDs specified doesn't matter
-    std::pair<int, int> DiploKey(int id1, int ind2)
-    { return std::make_pair(std::max(id1, ind2), std::min(id1, ind2)); }
-
-    const std::string EMPTY_STRING;
+    [[nodiscard]] inline constexpr auto DiploKey(int id1, int ind2) noexcept
+    { return std::pair(std::max(id1, ind2), std::min(id1, ind2)); }
 }
 
 EmpireManager& EmpireManager::operator=(EmpireManager&& other) noexcept {
     if (this != &other) {
+        m_empire_ids = std::move(other.m_empire_ids);
+        m_capital_ids = std::move(other.m_capital_ids);
         m_empire_map = std::move(other.m_empire_map);
         m_const_empire_map = std::move(other.m_const_empire_map);
         m_empire_diplomatic_statuses = std::move(other.m_empire_diplomatic_statuses);
@@ -26,17 +26,6 @@ EmpireManager& EmpireManager::operator=(EmpireManager&& other) noexcept {
     }
     return *this;
 }
-
-std::vector<int> EmpireManager::EmpireIDs() const {
-    std::vector<int> retval;
-    retval.reserve(m_const_empire_map.size());
-    std::transform(m_const_empire_map.begin(), m_const_empire_map.end(),
-                   std::back_inserter(retval), [](const auto& e) { return e.first; });
-    return retval;
-}
-
-const EmpireManager::const_container_type& EmpireManager::GetEmpires() const
-{ return m_const_empire_map; }
 
 std::shared_ptr<const Empire> EmpireManager::GetEmpire(int id) const {
     auto it = m_const_empire_map.find(id);
@@ -47,14 +36,6 @@ std::shared_ptr<const UniverseObject> EmpireManager::GetSource(int id, const Obj
     auto it = m_const_empire_map.find(id);
     return it != m_const_empire_map.end() ? it->second->Source(objects) : nullptr;
 }
-
-const std::string& EmpireManager::GetEmpireName(int id) const {
-    auto it = m_const_empire_map.find(id);
-    return it == m_const_empire_map.end() ? EMPTY_STRING : it->second->Name();
-}
-
-int EmpireManager::NumEmpires() const
-{ return m_const_empire_map.size(); }
 
 int EmpireManager::NumEliminatedEmpires() const {
     int eliminated_count = 0;
@@ -108,33 +89,38 @@ std::string EmpireManager::DumpDiplomacy() const {
     return retval;
 }
 
-const EmpireManager::container_type& EmpireManager::GetEmpires()
-{ return m_empire_map; }
-
 std::shared_ptr<Empire> EmpireManager::GetEmpire(int id) {
     iterator it = m_empire_map.find(id);
     return it == end() ? nullptr : it->second;
 }
 
-EmpireManager::const_iterator EmpireManager::begin() const
-{ return m_const_empire_map.begin(); }
+std::size_t EmpireManager::SizeInMemory() const {
+    std::size_t retval = sizeof(EmpireManager);
 
-EmpireManager::const_iterator EmpireManager::end() const
-{ return m_const_empire_map.end(); }
+    retval += sizeof(decltype(m_empire_ids)::value_type)*m_empire_ids.capacity();
+    retval += sizeof(decltype(m_capital_ids)::value_type)*m_capital_ids.capacity();
 
-EmpireManager::iterator EmpireManager::begin()
-{ return m_empire_map.begin(); }
+    retval += (sizeof(decltype(m_empire_map)::value_type) + sizeof(void*))*m_empire_map.size();
+    for (const auto& id_e : m_empire_map) {
+        if (id_e.second)
+            retval += id_e.second->SizeInMemory();
+    }
 
-EmpireManager::iterator EmpireManager::end()
-{ return m_empire_map.end(); }
+    retval += (sizeof(decltype(m_const_empire_map)::value_type) + sizeof(void*))*m_const_empire_map.size();
+    retval += sizeof(decltype(m_empire_diplomatic_statuses)::value_type)*m_empire_diplomatic_statuses.capacity();
+    retval += (sizeof(decltype(m_diplomatic_messages)::value_type) + sizeof(void*))*m_diplomatic_messages.size();
 
-void EmpireManager::BackPropagateMeters() {
+    return retval;
+}
+
+
+void EmpireManager::BackPropagateMeters() noexcept {
     for (auto& entry : m_empire_map)
         entry.second->BackPropagateMeters();
 }
 
 void EmpireManager::CreateEmpire(int empire_id, std::string name, std::string player_name,
-                                 const EmpireColor& color, bool authenticated)
+                                 EmpireColor color, bool authenticated)
 {
     auto empire = std::make_shared<Empire>(std::move(name), std::move(player_name),
                                            empire_id, color, authenticated);
@@ -149,23 +135,22 @@ void EmpireManager::InsertEmpire(std::shared_ptr<Empire>&& empire) {
 
     int empire_id = empire->EmpireID();
 
-    if (m_empire_map.count(empire_id)) {
+    if (m_empire_map.contains(empire_id)) {
         ErrorLogger() << "EmpireManager::InsertEmpire passed empire with id (" << empire_id << ") for which there already is an empire.";
         return;
     }
 
+    m_empire_ids.insert(empire_id);
     m_const_empire_map[empire_id] = empire;
     m_empire_map[empire_id] = std::move(empire);
 }
 
-void EmpireManager::Clear() {
+void EmpireManager::Clear() noexcept {
+    m_empire_ids.clear();
     m_const_empire_map.clear();
     m_empire_map.clear();
     m_empire_diplomatic_statuses.clear();
 }
-
-const EmpireManager::DiploStatusMap& EmpireManager::GetDiplomaticStatuses() const
-{ return m_empire_diplomatic_statuses; }
 
 DiplomaticStatus EmpireManager::GetDiplomaticStatus(int empire1, int empire2) const {
     if (empire1 == ALL_EMPIRES || empire2 == ALL_EMPIRES || empire1 == empire2)
@@ -178,20 +163,23 @@ DiplomaticStatus EmpireManager::GetDiplomaticStatus(int empire1, int empire2) co
     return DiplomaticStatus::INVALID_DIPLOMATIC_STATUS;
 }
 
-std::set<int> EmpireManager::GetEmpireIDsWithDiplomaticStatusWithEmpire(
+boost::container::flat_set<int> EmpireManager::GetEmpireIDsWithDiplomaticStatusWithEmpire(
     int empire_id, DiplomaticStatus diplo_status, const DiploStatusMap& statuses)
 {
-    std::set<int> retval;
+    boost::container::flat_set<int> retval;
     if (empire_id == ALL_EMPIRES || diplo_status == DiplomaticStatus::INVALID_DIPLOMATIC_STATUS)
         return retval;
+    retval.reserve(statuses.size()); // probably an overestimate
+
     // find ids of empires with the specified diplomatic status with the specified empire
-    for (auto const& [id_pair, status] : statuses) {
-        if (status != diplo_status)
-            continue;
-        if (id_pair.first == empire_id)
-            retval.insert(id_pair.second);
-        else if (id_pair.second == empire_id)
-            retval.insert(id_pair.first);
+    for (auto const &[emp1, emp2] : statuses
+         | range_filter([diplo_status](const auto& ids_status) noexcept { return ids_status.second == diplo_status; })
+         | range_keys)
+    {
+        if (emp1 == empire_id)
+            retval.insert(emp2);
+        else if (emp2 == empire_id)
+            retval.insert(emp1);
     }
     return retval;
 }
@@ -203,16 +191,16 @@ bool EmpireManager::DiplomaticMessageAvailable(int sender_id, int recipient_id) 
 }
 
 const DiplomaticMessage& EmpireManager::GetDiplomaticMessage(int sender_id, int recipient_id) const {
-    auto it = m_diplomatic_messages.find({sender_id, recipient_id});
+    const auto it = m_diplomatic_messages.find({sender_id, recipient_id});
     if (it != m_diplomatic_messages.end())
         return it->second;
-    static DiplomaticMessage DEFAULT_DIPLOMATIC_MESSAGE;
+    static constexpr DiplomaticMessage DEFAULT_DIPLOMATIC_MESSAGE;
     //WarnLogger() << "Couldn't find requested diplomatic message between empires " << sender_id << " and " << recipient_id;
     return DEFAULT_DIPLOMATIC_MESSAGE;
 }
 
 void EmpireManager::SetDiplomaticStatus(int empire1, int empire2, DiplomaticStatus status) {
-    DiplomaticStatus initial_status = GetDiplomaticStatus(empire1, empire2);
+    const DiplomaticStatus initial_status = GetDiplomaticStatus(empire1, empire2);
     if (status != initial_status) {
         m_empire_diplomatic_statuses[DiploKey(empire1, empire2)] = status;
         DiplomaticStatusChangedSignal(empire1, empire2);
@@ -220,8 +208,8 @@ void EmpireManager::SetDiplomaticStatus(int empire1, int empire2, DiplomaticStat
 }
 
 void EmpireManager::SetDiplomaticMessage(const DiplomaticMessage& message) {
-    int empire1 = message.SenderEmpireID();
-    int empire2 = message.RecipientEmpireID();
+    const int empire1 = message.SenderEmpireID();
+    const int empire2 = message.RecipientEmpireID();
     const DiplomaticMessage& initial_message = GetDiplomaticMessage(empire1, empire2);
     if (message != initial_message) {
         m_diplomatic_messages[{empire1, empire2}] = message;
@@ -230,9 +218,9 @@ void EmpireManager::SetDiplomaticMessage(const DiplomaticMessage& message) {
 }
 
 void EmpireManager::RemoveDiplomaticMessage(int sender_id, int recipient_id) {
-    auto it = m_diplomatic_messages.find({sender_id, recipient_id});
-    bool changed = (it != m_diplomatic_messages.end()) &&
-                   (it->second.GetType() != DiplomaticMessage::Type::INVALID);
+    const auto it = m_diplomatic_messages.find({sender_id, recipient_id});
+    const bool changed = (it != m_diplomatic_messages.end()) &&
+                         (it->second.GetType() != DiplomaticMessage::Type::INVALID);
 
     m_diplomatic_messages[{sender_id, recipient_id}] =
         DiplomaticMessage(sender_id, recipient_id, DiplomaticMessage::Type::INVALID);
@@ -243,15 +231,15 @@ void EmpireManager::RemoveDiplomaticMessage(int sender_id, int recipient_id) {
 }
 
 void EmpireManager::HandleDiplomaticMessage(const DiplomaticMessage& message) {
-    int sender_empire_id = message.SenderEmpireID();
-    int recipient_empire_id = message.RecipientEmpireID();
+    const int sender_empire_id = message.SenderEmpireID();
+    const int recipient_empire_id = message.RecipientEmpireID();
 
     if (!message.IsAllowed())
         return;
 
-    DiplomaticStatus diplo_status = GetDiplomaticStatus(sender_empire_id, recipient_empire_id);
-    bool message_from_recipient_to_sender_available = DiplomaticMessageAvailable(recipient_empire_id, sender_empire_id);
-    const DiplomaticMessage& existing_message_from_recipient_to_sender = GetDiplomaticMessage(recipient_empire_id, sender_empire_id);
+    const DiplomaticStatus diplo_status = GetDiplomaticStatus(sender_empire_id, recipient_empire_id);
+    const bool message_from_recipient_to_sender_available = DiplomaticMessageAvailable(recipient_empire_id, sender_empire_id);
+    const auto& existing_message_from_recipient_to_sender = GetDiplomaticMessage(recipient_empire_id, sender_empire_id);
     //bool message_from_sender_to_recipient_available = DiplomaticMessageAvailable(sender_empire_id, recipient_empire_id);
 
     switch (message.GetType()) {
@@ -367,6 +355,14 @@ void EmpireManager::ResetDiplomacy() {
     }
 }
 
+void EmpireManager::RefreshCapitalIDs() {
+    m_capital_ids.clear();
+    m_capital_ids.reserve(m_const_empire_map.size());
+    std::transform(m_const_empire_map.begin(), m_const_empire_map.end(),
+                   std::inserter(m_capital_ids, m_capital_ids.end()),
+                   [](const auto& e) { return e.second->CapitalID(); });
+}
+
 void EmpireManager::GetDiplomaticMessagesToSerialize(std::map<std::pair<int, int>, DiplomaticMessage>& messages,
                                                      int encoding_empire) const
 {
@@ -385,74 +381,49 @@ void EmpireManager::GetDiplomaticMessagesToSerialize(std::map<std::pair<int, int
     }
 }
 
-std::vector<EmpireColor>& EmpireColorsNonConst() {
-    static std::vector<EmpireColor> colors;
-    return colors;
+namespace {
+    const std::vector<EmpireColor> backup_empire_colors = {
+        {{ 0, 255,   0, 255}}, {{  0,   0, 255, 255}}, {{255,   0,   0, 255}},
+        {{ 0, 255, 255, 255}}, {{255, 255,   0, 255}}, {{255,   0, 255, 255}}
+    };
+    std::vector<EmpireColor> empire_colors;
+
+    constexpr uint8_t HexCharsToUInt8(std::string_view chars) noexcept {
+        auto digit0 = chars[0];
+        auto digit1 = chars[1];
+        uint8_t val0 = 16 * (digit0 >= 'A' ? (digit0 - 'A' + 10) : (digit0 - '0'));
+        uint8_t val1 = (digit1 >= 'A' ? (digit1 - 'A' + 10) : (digit1 - '0'));
+        return val0 + val1;
+    };
+
+    constexpr EmpireColor HexStringToEmpireColor(std::string_view hex_colour) noexcept {
+        const auto sz = hex_colour.size();
+        return {{
+            (sz >= 2) ? HexCharsToUInt8(hex_colour.substr(0, 2)) : uint8_t{0u},
+            (sz >= 4) ? HexCharsToUInt8(hex_colour.substr(2, 2)) : uint8_t{0u},
+            (sz >= 6) ? HexCharsToUInt8(hex_colour.substr(4, 2)) : uint8_t{0u},
+            (sz >= 8) ? HexCharsToUInt8(hex_colour.substr(6, 2)) : uint8_t{255u}
+        }};
+    }
 }
 
-/** Named ctor that constructs a EmpireColor from a string that represents the color
-    channels in the format '#RRGGBB', '#RRGGBBAA' where each channel value
-    ranges from 0 to FF.  When the alpha component is left out the alpha
-    value FF is assumed.
-    @throws std::invalid_argument if the hex_colour string is not well formed
-    */
-inline EmpireColor HexClr(const std::string& hex_colour)
-{
-    std::istringstream iss(hex_colour);
-
-    unsigned long rgba = 0;
-    if ((hex_colour.size() == 7 || hex_colour.size() == 9) &&
-            '#' == iss.get() && !(iss >> std::hex >> rgba).fail())
-    {
-        EmpireColor retval = EmpireColor{{0, 0, 0, 255}};
-
-        if (hex_colour.size() == 7) {
-            std::get<0>(retval) = (rgba >> 16) & 0xFF;
-            std::get<1>(retval) = (rgba >> 8)  & 0xFF;
-            std::get<2>(retval) = rgba         & 0xFF;
-            std::get<3>(retval) = 255;
-        } else {
-            std::get<0>(retval) = (rgba >> 24) & 0xFF;
-            std::get<1>(retval) = (rgba >> 16) & 0xFF;
-            std::get<2>(retval) = (rgba >> 8)  & 0xFF;
-            std::get<3>(retval) = rgba         & 0xFF;
-        }
-
-        return retval;
-    }
-
-    throw std::invalid_argument("EmpireColor could not interpret hex colour string");
+const std::vector<EmpireColor>& EmpireColors() {
+    if (empire_colors.empty())
+        return backup_empire_colors;
+    return empire_colors;
 }
 
 void InitEmpireColors(const boost::filesystem::path& path) {
-    auto& colors = EmpireColorsNonConst();
-
     XMLDoc doc;
 
     std::string empire_colors_content;
     if (ReadFile(path, empire_colors_content)) {
         doc.ReadDoc(empire_colors_content);
     } else {
-        ErrorLogger() << "Unable to open data file " << path.filename();
+        ErrorLogger() << "InitEmpireColors: Unable to open data file " << path.filename();
         return;
     }
 
-    for (const XMLElement& elem : doc.root_node.children) {
-        try {
-            std::string hex_colour("#");
-            hex_colour.append(elem.attributes.at("hex"));
-            colors.push_back(HexClr(hex_colour));
-        } catch(const std::exception& e) {
-            ErrorLogger() << "empire_colors.xml: " << e.what() << "\n";
-        }
-    }
-}
-
-const std::vector<EmpireColor>& EmpireColors() {
-    auto& colors = EmpireColorsNonConst();
-    if (colors.empty()) {
-        colors = {{{ 0, 255,   0, 255}}, {{  0,   0, 255, 255}}, {{255,   0,   0, 255}},
-                  {{ 0, 255, 255, 255}}, {{255, 255,   0, 255}}, {{255,   0, 255, 255}}};
-    }
-    return colors;
+    for (const XMLElement& elem : doc.root_node.Children())
+        empire_colors.push_back(HexStringToEmpireColor(elem.Attribute("hex")));
 }

@@ -1,20 +1,43 @@
-from common.base_prod import TECH_COST_MULTIPLIER
-from common.priorities import TARGET_AFTER_2ND_SCALING_PRIORITY
+from focs._effects import (
+    Contains,
+    DirectDistanceBetween,
+    EffectsGroup,
+    Focus,
+    Happiness,
+    IsSource,
+    LocalCandidate,
+    Max,
+    MaxOf,
+    MinOf,
+    NamedReal,
+    OwnedBy,
+    Planet,
+    SetEmpireMeter,
+    SetTargetResearch,
+    Source,
+    Statistic,
+    System,
+    Target,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER
+from macros.priorities import TARGET_AFTER_2ND_SCALING_PRIORITY
 
 Tech(
     name="LRN_DISTRIB_THOUGHT",
     description="LRN_DISTRIB_THOUGHT_DESC",
-    short_description="RESEARCH_SHORT_DESC",
+    short_description="RESEARCH_AND_SLOT_SHORT_DESC",
     category="LEARNING_CATEGORY",
-    researchcost=75 * TECH_COST_MULTIPLIER,
+    researchcost=120 * TECH_COST_MULTIPLIER,
     researchturns=5,
     tags=["PEDIA_LEARNING_CATEGORY"],
-    prerequisites="LRN_PSIONICS",
+    prerequisites=["LRN_PSIONICS"],
     effectsgroups=[
         EffectsGroup(
-            scope=ProductionCenter
+            scope=Planet()
             & OwnedBy(empire=Source.Owner)
-            & Focus(type="FOCUS_RESEARCH")
+            & Focus(type=["FOCUS_RESEARCH"])
             & Happiness(low=NamedReal(name="LRN_DISTRIB_THOUGHT_MIN_STABILITY", value=10)),
             priority=TARGET_AFTER_2ND_SCALING_PRIORITY,
             effects=SetTargetResearch(
@@ -31,7 +54,7 @@ Tech(
                             Max,
                             value=DirectDistanceBetween(Target.ID, LocalCandidate.ID),
                             condition=System
-                            & Contains(Planet() & OwnedBy(empire=Source.Owner) & Focus(type="FOCUS_RESEARCH")),
+                            & Contains(Planet() & OwnedBy(empire=Source.Owner) & Focus(type=["FOCUS_RESEARCH"])),
                         )
                         ** 0.5,
                     ),
@@ -39,7 +62,7 @@ Tech(
             ),
         ),
         EffectsGroup(
-            scope=Source,
+            scope=IsSource,
             effects=SetEmpireMeter(empire=Source.Owner, meter="MILITARY_CATEGORY_NUM_POLICY_SLOTS", value=Value + 1),
         ),
     ],

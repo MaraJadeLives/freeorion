@@ -9,8 +9,11 @@ When executed, definition files will be generated in the current working directo
 import os
 import os.path
 import string
+from itertools import chain
 
 # List of all colonizable species in game: definition key, graphic file(relative to default/data/art)
+from typing import Any
+
 species_list = [
     ("SP_SUPER_TEST", "icons/species/other-04.png"),
     ("SP_ABADDONI", "icons/species/abaddonnian.png"),
@@ -87,7 +90,6 @@ BuildingType
         OwnedBy empire = Source.Owner
         Population high = 0
         Not Planet environment = Uninhabitable species = "${id}"
-        Not Contains Building name = "BLD_COL_${name}"
         ${species_condition}
     ]
     enqueuelocation = And [
@@ -95,8 +97,7 @@ BuildingType
         OwnedBy empire = Source.Owner
         Population high = 0
         Not Planet environment = Uninhabitable species = "${id}"
-        Not Contains Building name = "BLD_COL_${name}"
-        Not Enqueued type = Building name = "BLD_COL_${name}"
+        ${exclude_parallel_colonies}
         ${species_condition}
     ]
     effectsgroups = [
@@ -127,11 +128,11 @@ BuildingType
     ]
     icon = "${graphic}"
 
-#include "/scripting/common/misc.macros"
-#include "/scripting/common/upkeep.macros"
-#include "/scripting/common/priorities.macros"
-#include "/scripting/common/base_prod.macros"
-#include "/scripting/species/common/population.macros"
+#include "/scripting/macros/misc.macros"
+#include "/scripting/macros/upkeep.macros"
+#include "/scripting/macros/priorities.macros"
+#include "/scripting/macros/base_prod.macros"
+#include "/scripting/macros/misc.macros"
 """
 )
 
@@ -224,6 +225,16 @@ t_buildtime = string.Template(
     )"""
 )
 
+exclude_parallel_colonies = ""
+for species in chain((x[0] for x in species_list), species_extinct_techs.keys()):
+    name = species[3:]
+    exclude_parallel_colonies += f"""\
+        Not Contains And [ Building name = "BLD_COL_{name}" OwnedBy empire = Source.Owner ]
+        Not Enqueued type = Building name = "BLD_COL_{name}"
+"""
+# remove indent from first line and newline at the end to match format expected by the template
+exclude_parallel_colonies = exclude_parallel_colonies[8:-1]
+
 outpath = os.getcwd()
 print("Output folder: %s" % outpath)
 
@@ -234,13 +245,14 @@ for sp_id, sp_graphic in species_list:
     sp_gamerule = species_colony_gamerules.get(sp_id, colony_gamerule_default)
     extinct_tech = species_extinct_techs.get(sp_id, "")
 
-    data = {
+    data: dict[str, Any] = {
         "id": sp_id,
         "name": sp_name,
         "tags": sp_tags,
         "graphic": sp_graphic,
         "cost": species_buildcost.get(sp_id, buildcost_default),
         "time": "",
+        "exclude_parallel_colonies": exclude_parallel_colonies,
         "species_condition": "",
     }
 

@@ -15,23 +15,22 @@ parse::detail::info_visitor::info_visitor(std::ostream& os, const string& tag, s
 {}
 
 void parse::detail::info_visitor::indent() const {
-    if (m_indent)
+    if (m_indent > 0)
         m_os << std::string(m_indent, ' ');
 }
 
 std::string parse::detail::info_visitor::prepare(const string& s) const {
-    std::string str = s;
-    if (str == parse::lexer::bool_regex)
-        str = "boolean (true or false)";
-    else if (str == parse::lexer::string_regex)
-        str = "string";
-    else if (str == parse::lexer::int_regex)
-        str = "integer";
-    else if (str == parse::lexer::double_regex)
-        str = "real number";
-    else if (str.find("(?i:") == 0)
-        str = str.substr(4, str.size() - 5);
-    return str;
+    if (s == parse::lexer::bool_regex)
+        return "boolean (true or false)";
+    else if (s == parse::lexer::string_regex)
+        return "string";
+    else if (s == parse::lexer::int_regex)
+        return "integer";
+    else if (s == parse::lexer::double_regex)
+        return "real number";
+    else if (s.find("(?i:") == 0)
+        return s.substr(4, s.size() - 5);
+    return s;
 }
 
 void parse::detail::info_visitor::print(const string& str) const
@@ -66,9 +65,8 @@ void parse::detail::info_visitor::multi_info(Iter first, const Iter last) const
             ++first;
         const string* value = boost::get<string>(&first->value);
         if (value && *value == "[") {
-            for (; first != last; ++first) {
+            for (; first != last; ++first)
                 boost::apply_visitor(info_visitor(m_os, first->tag, 1), first->value);
-            }
         } else {
             boost::apply_visitor(info_visitor(m_os, first->tag, 1), first->value);
         }
@@ -98,7 +96,9 @@ std::function<void (const std::string&)> parse::report_error_::send_error_string
     &detail::default_send_error_string;
 
 namespace {
-    std::vector<parse::text_iterator> LineStarts(const parse::text_iterator& begin, const parse::text_iterator& end) {
+    std::vector<parse::text_iterator> LineStarts(const parse::text_iterator begin,
+                                                 const parse::text_iterator end)
+    {
         //DebugLogger() << "line starts start";
         using namespace parse;
 
@@ -140,11 +140,11 @@ namespace {
 }
 
 std::pair<parse::text_iterator, unsigned int> parse::report_error_::line_start_and_line_number(
-    const parse::text_iterator& begin, const parse::text_iterator& end, text_iterator error_position) const
+    const parse::text_iterator begin, const parse::text_iterator end, text_iterator error_position) const
 {
     //DebugLogger() << "line_start_and_line_number start ... looking for: " << std::string(error_position, error_position + 20);
     if (error_position == begin)
-        return std::make_pair(begin, 1);
+        return std::pair(begin, 1);
 
     std::vector<parse::text_iterator> line_starts = LineStarts(begin, end);
 
@@ -153,13 +153,13 @@ std::pair<parse::text_iterator, unsigned int> parse::report_error_::line_start_a
     for (unsigned int index = 0; index < line_starts.size(); ++index) {
         if (std::distance(line_starts[index], error_position) < 0 && index > 0) {
             //DebugLogger() << "line_start_and_line_number early end";
-            return std::make_pair(line_starts[index-1], index); // return start of previous line, which contained the error_position text
+            return std::pair(line_starts[index-1], index); // return start of previous line, which contained the error_position text
         }
         //DebugLogger() << "line: " << index + 1 << " distance: " << std::distance(line_starts[index], error_position) << " : " << get_line(line_starts[index]);
     }
 
     //DebugLogger() << "line_start_and_line_number end";
-    return std::make_pair(begin, 1);
+    return std::pair(begin, 1);
 }
 
 std::string parse::report_error_::get_line(const parse::text_iterator& end, text_iterator line_start) const {
@@ -204,8 +204,8 @@ std::string parse::report_error_::get_lines_after(
     //DebugLogger() << "get_lines_after start";
 
     std::vector<parse::text_iterator> all_line_starts = LineStarts(begin, end);
-    unsigned int target_line = 1;
-    for (unsigned int line_minus_one = 0; line_minus_one < all_line_starts.size(); ++line_minus_one) {
+    size_t target_line = 1;
+    for (size_t line_minus_one = 0u; line_minus_one < all_line_starts.size(); ++line_minus_one) {
         if (std::distance(all_line_starts[line_minus_one], line_start) < 0) {
             target_line = line_minus_one;   // want line before line that starts past the requested line_start
             break;
@@ -217,9 +217,9 @@ std::string parse::report_error_::get_lines_after(
     }
     //DebugLogger() << "get_lines_after line " << target_line;
 
-    static constexpr unsigned int NUM_LINES = 5;
-    unsigned int retval_first_line = target_line + 1;
-    unsigned int retval_last_line = all_line_starts.size();
+    static constexpr size_t NUM_LINES = 5;
+    const size_t retval_first_line = target_line + 1;
+    size_t retval_last_line = all_line_starts.size();
     if (retval_first_line + NUM_LINES < all_line_starts.size())
         retval_last_line = retval_first_line + NUM_LINES - 1;
 

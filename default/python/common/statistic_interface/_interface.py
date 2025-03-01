@@ -1,13 +1,13 @@
 from abc import ABC
 from enum import Enum
-from typing import Callable, Dict, TypeVar, Union
+from typing import Callable, TypeVar, Union
 
 from common.statistic_interface._dump_value import DumpDict, DumpInt, DumpMultiple
 from common.statistic_interface._serizlizer import to_float, to_int, to_str
 
 _ScalarValue = Union[str, int, float]
 
-StatValue = TypeVar("StatValue", Dict[str, _ScalarValue], _ScalarValue)
+StatValue = TypeVar("StatValue", dict[str, _ScalarValue], _ScalarValue)
 
 
 class Serializer(ABC):
@@ -55,12 +55,11 @@ class StatKey(Enum):
         return self.value.multi
 
     @classmethod
-    def get_by_value_name(cls, name: str):
+    def get_by_value_name(cls, name: str) -> "StatKey":
         for item in cls:
             if item.value.name == name:
                 return item
-        else:
-            raise ValueError(f"Cannot find value with {name}")
+        raise ValueError(f"Cannot find value with {name}")
 
 
 LOG_PREFIX = "##"

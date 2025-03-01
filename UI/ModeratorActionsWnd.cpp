@@ -112,14 +112,14 @@ void ModeratorActionsWnd::CompleteConstruction() {
     for (PlanetSize planet_size = PlanetSize::SZ_TINY; planet_size != PlanetSize::NUM_PLANET_SIZES;
          planet_size = PlanetSize(int(planet_size) + 1))
     {
-        std::shared_ptr<GG::Texture> texture = ClientUI::PlanetSizeIcon(planet_size);
+        auto texture = ClientUI::PlanetSizeIcon(planet_size);
         auto row = GG::Wnd::Create<GG::DropDownList::Row>();
         auto icon = GG::Wnd::Create<GG::StaticGraphic>(std::move(texture), style);
         icon->Resize(GG::Pt(CONTROL_WIDTH, CONTROL_HEIGHT));
         row->push_back(std::move(icon));
         m_planet_size_drop->Insert(std::move(row));
     }
-    GG::DropDownList::iterator it = m_planet_size_drop->begin();
+    auto it = m_planet_size_drop->begin();
     std::advance(it, 2);
     m_planet_size_drop->Select(it); // default select 3rd size (should be medium?)
     m_planet_size_drop->SelChangedSignal.connect(boost::bind(&ModeratorActionsWnd::CreatePlanet, this));
@@ -298,7 +298,7 @@ void ModeratorActionsWnd::DoLayout() {
     m_planet_size_drop->SizeMove(GG::Pt(left, top), GG::Pt(left + DROP_WIDTH, top + CONTROL_HEIGHT));
 }
 
-void ModeratorActionsWnd::SizeMove(const GG::Pt& ul, const GG::Pt& lr) {
+void ModeratorActionsWnd::SizeMove(GG::Pt ul, GG::Pt lr) {
     GG::Pt old_size = GG::Wnd::Size();
 
     CUIWnd::SizeMove(ul, lr);
@@ -331,7 +331,7 @@ void ModeratorActionsWnd::Refresh() {
         m_empire_drop->Select(m_empire_drop->begin());
 }
 
-void ModeratorActionsWnd::EnableActions(bool enable/* = true*/)
+void ModeratorActionsWnd::EnableActions(bool enable)
 { m_actions_enabled = enable; }
 
 void ModeratorActionsWnd::CloseClicked()

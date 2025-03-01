@@ -59,11 +59,12 @@ namespace py = boost::python;
 // server side Python scripts
 namespace {
     // Wrapper for getting empire objects
-    auto GetAllEmpires() -> py::list
+    auto GetAllEmpiresIDs() -> py::list
     {
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
         py::list empire_list;
-        for (const auto& entry : Empires())
-            empire_list.append(entry.second->EmpireID());
+        for (const auto id : context.EmpireIDs())
+            empire_list.append(id);
         return empire_list;
     }
 
@@ -71,7 +72,7 @@ namespace {
     void GenerateSitRep(int empire_id, const std::string& template_string,
                         const py::dict& py_params, const std::string& icon)
     {
-        ScriptingContext context;
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
         int sitrep_turn = context.current_turn + 1;
 
         std::vector<std::pair<std::string, std::string>> params;
@@ -86,8 +87,8 @@ namespace {
         }
 
         if (empire_id == ALL_EMPIRES) {
-            for (const auto& entry : context.Empires()) {
-                entry.second->AddSitRepEntry(CreateSitRep(
+            for (const auto& empire : context.Empires() | range_values) {
+                empire->AddSitRepEntry(CreateSitRep(
                     template_string, sitrep_turn, icon, params));  // copy params for each...
             }
         } else {
@@ -104,7 +105,8 @@ namespace {
     // Wrappers for Species / SpeciesManager class (member) functions
     auto SpeciesDefaultFocus(const std::string& species_name) -> py::object
     {
-        const Species* species = GetSpecies(species_name);
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        const Species* species = context.species.GetSpecies(species_name);
         if (!species) {
             ErrorLogger() << "SpeciesDefaultFocus: couldn't get species " << species_name;
             return py::object("");
@@ -114,7 +116,8 @@ namespace {
 
     auto SpeciesGetPlanetEnvironment(const std::string& species_name, PlanetType planet_type) -> PlanetEnvironment
     {
-        const Species* species = GetSpecies(species_name);
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        const Species* species = context.species.GetSpecies(species_name);
         if (!species) {
             ErrorLogger() << "SpeciesGetPlanetEnvironment: couldn't get species " << species_name;
             return PlanetEnvironment::INVALID_PLANET_ENVIRONMENT;
@@ -124,27 +127,30 @@ namespace {
 
     void SpeciesAddHomeworld(const std::string& species_name, int homeworld_id)
     {
-        auto species = GetSpeciesManager().GetSpecies(species_name);
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        const Species* species = context.species.GetSpecies(species_name);
         if (!species) {
             ErrorLogger() << "SpeciesAddHomeworld: couldn't get species " << species_name;
             return;
         }
-        GetSpeciesManager().AddSpeciesHomeworld(species_name, homeworld_id);
+        context.species.AddSpeciesHomeworld(species_name, homeworld_id);
     }
 
     void SpeciesRemoveHomeworld(const std::string& species_name, int homeworld_id)
     {
-        auto species = GetSpeciesManager().GetSpecies(species_name);
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        const Species* species = context.species.GetSpecies(species_name);
         if (!species) {
             ErrorLogger() << "SpeciesAddHomeworld: couldn't get species " << species_name;
             return;
         }
-        GetSpeciesManager().RemoveSpeciesHomeworld(species_name, homeworld_id);
+        context.species.RemoveSpeciesHomeworld(species_name, homeworld_id);
     }
 
     auto SpeciesCanColonize(const std::string& species_name) -> bool
     {
-        auto species = GetSpeciesManager().GetSpecies(species_name);
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        const Species* species = context.species.GetSpecies(species_name);
         if (!species) {
             ErrorLogger() << "SpeciesCanColonize: couldn't get species " << species_name;
             return false;
@@ -154,30 +160,30 @@ namespace {
 
     auto GetAllSpecies() -> py::list
     {
-        py::list            species_list;
-        for (const auto& entry : GetSpeciesManager()) {
+        py::list species_list;
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        for (const auto& entry : context.species)
             species_list.append(py::object(entry.first));
-        }
         return species_list;
     }
 
     auto GetPlayableSpecies() -> py::list
     {
-        py::list            species_list;
-        SpeciesManager& species_manager = GetSpeciesManager();
-        for (auto it = species_manager.playable_begin();
-             it != species_manager.playable_end(); ++it)
-        { species_list.append(py::object(it->first)); }
+        py::list species_list;
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        SpeciesManager& species_manager = context.species;
+        for (auto it = species_manager.playable_begin(); it != species_manager.playable_end(); ++it)
+            species_list.append(py::object(it->first)); // TODO: add GetPlayable() and use range for loop here
         return species_list;
     }
 
     auto GetNativeSpecies() -> py::list
     {
-        py::list            species_list;
-        SpeciesManager& species_manager = GetSpeciesManager();
-        for (auto it = species_manager.native_begin();
-             it != species_manager.native_end(); ++it)
-        { species_list.append(py::object(it->first)); }
+        py::list species_list;
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+        SpeciesManager& species_manager = context.species;
+        for (auto it = species_manager.native_begin(); it != species_manager.native_end(); ++it)
+            species_list.append(py::object(it->first));
         return species_list;
     }
 
@@ -191,10 +197,12 @@ namespace {
         if (!cond)
             DebugLogger() << "FilterIDsWithCondition passed null condition";
 
+        const ScriptingContext& context = ServerApp::GetApp()->GetContext();
+
         Condition::ObjectSet objs;
         py::stl_input_iterator<int> end;
         for (py::stl_input_iterator<int> id(obj_ids); id != end; ++id) {
-            if (auto obj = Objects().get(*id))
+            if (auto obj = context.ContextObjects().getRaw(*id))
                 objs.push_back(obj);
             else
                 ErrorLogger() << "FilterIDsWithCondition:: Passed an invalid universe object id " << *id;
@@ -209,13 +217,12 @@ namespace {
         // get location condition and evaluate it with the specified universe object
         // if no location condition has been defined, all objects matches
         if (cond && cond->SourceInvariant()) {
-            ScriptingContext context;
             cond->Eval(context, permitted_objs, objs);
         } else {
             permitted_objs = std::move(objs);
         }
 
-        for (auto &obj : permitted_objs)
+        for (auto* obj : permitted_objs)
             permitted_ids.append(obj->ID());
 
         return permitted_ids;
@@ -274,20 +281,20 @@ namespace {
     }
 
     // Wrappers for Empire class member functions
-    void EmpireSetName(int empire_id, const std::string& name)
+    void EmpireSetName(int empire_id, std::string name)
     {
-        ScriptingContext context;
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
         auto empire = context.GetEmpire(empire_id);
         if (!empire) {
             ErrorLogger() << "EmpireSetName: couldn't get empire with ID " << empire_id;
             return;
         }
-        empire->SetName(name);
+        empire->SetName(std::move(name));
     }
 
     auto EmpireSetHomeworld(int empire_id, int planet_id, const std::string& species_name) -> bool
     {
-        ScriptingContext context;
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
         auto empire = context.GetEmpire(empire_id);
         if (!empire) {
             ErrorLogger() << "EmpireSetHomeworld: couldn't get empire with ID " << empire_id;
@@ -299,44 +306,39 @@ namespace {
     void EmpireUnlockItem(int empire_id, UnlockableItemType item_type,
                           const std::string& item_name)
     {
-        Universe& universe{GetUniverse()};
-        EmpireManager& empires{Empires()};
-        int current_turn{CurrentTurn()};
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
 
-        auto empire = empires.GetEmpire(empire_id);
+        auto empire = context.GetEmpire(empire_id);
         if (!empire) {
             ErrorLogger() << "EmpireUnlockItem: couldn't get empire with ID " << empire_id;
             return;
         }
         auto item = UnlockableItem{item_type, item_name};
-        empire->UnlockItem(item, universe, current_turn);
+        empire->UnlockItem(item, context.ContextUniverse(), context.current_turn);
     }
 
     void EmpireAddShipDesign(int empire_id, const std::string& design_name) {
-        Universe& universe{GetUniverse()};
-        EmpireManager& empires{Empires()};
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
 
-        auto empire = empires.GetEmpire(empire_id);
+        auto empire = context.GetEmpire(empire_id);
         if (!empire) {
             ErrorLogger() << "EmpireAddShipDesign: couldn't get empire with ID " << empire_id;
             return;
         }
 
         // check if a ship design with ID ship_design_id has been added to the universe
-        const ShipDesign* ship_design = universe.GetGenericShipDesign(design_name);
+        const ShipDesign* ship_design = context.ContextUniverse().GetGenericShipDesign(design_name);
         if (!ship_design) {
             ErrorLogger() << "EmpireAddShipDesign: no ship design with name " << design_name << " has been added to the universe";
             return;
         }
 
-        universe.SetEmpireKnowledgeOfShipDesign(ship_design->ID(), empire_id);
-        empire->AddShipDesign(ship_design->ID(), universe);
+        context.ContextUniverse().SetEmpireKnowledgeOfShipDesign(ship_design->ID(), empire_id);
+        empire->AddShipDesign(ship_design->ID(), context.ContextUniverse());
     }
 
     void EmpireSetStockpile(int empire_id, ResourceType resource_type, double value) {
-        EmpireManager& empires{Empires()};
-
-        auto empire = empires.GetEmpire(empire_id);
+        auto empire = ServerApp::GetApp()->GetContext().GetEmpire(empire_id);
         if (!empire) {
             ErrorLogger() << "EmpireSetStockpile: couldn't get empire with ID " << empire_id;
             return;
@@ -350,14 +352,15 @@ namespace {
         }
     }
 
+    void EmpireSetDiplomacy(int empire1_id, int empire2_id, DiplomaticStatus status)
+    { ServerApp::GetApp()->GetContext().Empires().SetDiplomaticStatus(empire1_id, empire2_id, status); }
+
     // Wrapper for preunlocked items
     auto LoadUnlockableItemList() -> py::list
     {
         py::list py_items;
-        auto& items = GetUniverse().InitiallyUnlockedItems();
-        for (const auto& item : items) {
+        for (const auto& item : ServerApp::GetApp()->GetContext().ContextUniverse().InitiallyUnlockedItems())
             py_items.append(py::object(item));
-        }
         return py_items;
     }
 
@@ -365,8 +368,7 @@ namespace {
     auto LoadStartingBuildings() -> py::list
     {
         py::list py_items;
-        auto& buildings = GetUniverse().InitiallyUnlockedBuildings();
-        for (auto building : buildings) {
+        for (auto building : ServerApp::GetApp()->GetContext().ContextUniverse().InitiallyUnlockedBuildings()) {
             if (GetBuildingType(building.name))
                 py_items.append(py::object(building));
             else
@@ -381,7 +383,7 @@ namespace {
                           const std::string& icon, const std::string& model,
                           bool monster) -> bool
     {
-        Universe& universe = GetUniverse();
+        Universe& universe = ServerApp::GetApp()->GetContext().ContextUniverse();
         // Check for empty name
         if (name.empty()) {
             ErrorLogger() << "CreateShipDesign: tried to create ship design without a name";
@@ -397,24 +399,23 @@ namespace {
 
         // copy parts list from Python list to C++ vector
         std::vector<std::string> parts;
-        for (int i = 0; i < len(py_parts); i++) {
+        for (int i = 0; i < len(py_parts); i++)
             parts.push_back(py::extract<std::string>(py_parts[i]));
-        }
+
 
         // Create the design and add it to the universe
-        ShipDesign* design;
         try {
-            design = new ShipDesign(std::invalid_argument(""), name, description,
-                                    BEFORE_FIRST_TURN, ALL_EMPIRES,
-                                    hull, parts, icon, model, true, monster);
+            ShipDesign design(std::invalid_argument(""), name, description, BEFORE_FIRST_TURN,
+                              ALL_EMPIRES, hull, parts, icon, model, true, monster);
+
+            const auto new_id = universe.InsertShipDesign(design);
+            if (new_id == INVALID_DESIGN_ID) {
+                ErrorLogger() << "CreateShipDesign: couldn't insert ship design into universe";
+                return false;
+            }
+
         } catch (const std::invalid_argument&) {
             ErrorLogger() << "CreateShipDesign: invalid ship design";
-            return false;
-        }
-
-        if (!universe.InsertShipDesign(design)) {
-            ErrorLogger() << "CreateShipDesign: couldn't insert ship design into universe";
-            delete design;
             return false;
         }
 
@@ -424,9 +425,8 @@ namespace {
     auto ShipDesignGetPremadeList() -> py::list
     {
         py::list py_ship_designs;
-        for (const auto& design : GetPredefinedShipDesignManager().GetOrderedShipDesigns()) {
+        for (const auto& design : GetPredefinedShipDesignManager().GetOrderedShipDesigns())
             py_ship_designs.append(py::object(design->Name(false)));
-        }
         return py::list(py_ship_designs);
     }
 
@@ -434,9 +434,8 @@ namespace {
     {
         py::list py_monster_designs;
         const auto& manager = GetPredefinedShipDesignManager();
-        for (const auto& monster : manager.GetOrderedMonsterDesigns()) {
+        for (const auto& monster : manager.GetOrderedMonsterDesigns())
             py_monster_designs.append(py::object(monster->Name(false)));
-        }
         return py::list(py_monster_designs);
     }
 
@@ -448,27 +447,25 @@ namespace {
             m_fleet_plan(std::make_shared<FleetPlan>(std::move(fleet_plan)))
         {}
 
-        FleetPlanWrapper(const std::string& fleet_name, const py::list& py_designs) {
+        FleetPlanWrapper(std::string fleet_name, const py::list& py_designs) {
             std::vector<std::string> designs;
             for (int i = 0; i < len(py_designs); i++)
                 designs.push_back(py::extract<std::string>(py_designs[i]));
-            m_fleet_plan = std::make_shared<FleetPlan>(fleet_name, designs, false);
+            m_fleet_plan = std::make_shared<FleetPlan>(std::move(fleet_name), designs, false);
         }
 
         // name accessors
-        py::object Name()
+        py::object Name() const
         { return py::object(m_fleet_plan->Name()); }
 
         py::list ShipDesigns() {
             py::list py_designs;
-            for (const auto& design_name : m_fleet_plan->ShipDesigns()) {
+            for (const auto& design_name : m_fleet_plan->ShipDesigns())
                 py_designs.append(py::object(design_name));
-            }
             return py::list(py_designs);
         }
 
-        const FleetPlan& GetFleetPlan()
-        { return *m_fleet_plan; }
+        const auto& GetFleetPlan() const noexcept { return *m_fleet_plan; }
 
     private:
         // Use shared_ptr insead of unique_ptr because boost::python requires a deleter
@@ -477,9 +474,10 @@ namespace {
 
     auto LoadFleetPlanList() -> py::list {
         py::list py_fleet_plans;
-        auto&& fleet_plans = GetUniverse().InitiallyUnlockedFleetPlans();
-        for (auto fleet_plan : fleet_plans)
-            py_fleet_plans.append(FleetPlanWrapper(FleetPlan(*fleet_plan)));
+        const auto fleet_plans = ServerApp::GetApp()->GetContext().ContextUniverse().InitiallyUnlockedFleetPlans();
+        for (auto* fleet_plan : fleet_plans)
+            if (fleet_plan)
+                py_fleet_plans.append(FleetPlanWrapper(FleetPlan(*fleet_plan)));
         return py_fleet_plans;
     }
 
@@ -491,7 +489,7 @@ namespace {
             m_monster_fleet_plan(std::make_shared<MonsterFleetPlan>(std::move(monster_fleet_plan)))
         {}
 
-        MonsterFleetPlanWrapper(const std::string& fleet_name, const py::list& py_designs,
+        MonsterFleetPlanWrapper(std::string fleet_name, const py::list& py_designs,
                                 double spawn_rate, int spawn_limit)
         {
             std::vector<std::string> designs;
@@ -499,31 +497,31 @@ namespace {
                 designs.push_back(py::extract<std::string>(py_designs[i]));
 
             m_monster_fleet_plan =
-                std::make_shared<MonsterFleetPlan>(fleet_name, designs, spawn_rate,
+                std::make_shared<MonsterFleetPlan>(std::move(fleet_name), designs, spawn_rate,
                                                    spawn_limit, nullptr, false);
         }
 
         // name accessors
-        py::object Name()
+        py::object Name() const
         { return py::object(m_monster_fleet_plan->Name()); }
 
-        py::list ShipDesigns() {
+        py::list ShipDesigns()  const{
             py::list py_designs;
             for (const auto& design_name : m_monster_fleet_plan->ShipDesigns())
                 py_designs.append(py::object(design_name));
             return py::list(py_designs);
         }
 
-        double SpawnRate()
+        double SpawnRate() const noexcept
         { return m_monster_fleet_plan->SpawnRate(); }
 
-        int SpawnLimit()
+        int SpawnLimit() const noexcept
         { return m_monster_fleet_plan->SpawnLimit(); }
 
-        py::list Locations(py::list systems)
+        py::list Locations(py::list systems) const
         { return FilterIDsWithCondition(m_monster_fleet_plan->Location(), systems); }
 
-        const MonsterFleetPlan& GetMonsterFleetPlan()
+        const MonsterFleetPlan& GetMonsterFleetPlan() const noexcept
         { return *m_monster_fleet_plan; }
 
     private:
@@ -534,8 +532,8 @@ namespace {
     auto LoadMonsterFleetPlanList() -> py::list
     {
         py::list py_monster_fleet_plans;
-        auto&& monster_fleet_plans = GetUniverse().MonsterFleetPlans();
-        for (auto fleet_plan : monster_fleet_plans)
+        const auto monster_fleet_plans = ServerApp::GetApp()->GetContext().ContextUniverse().MonsterFleetPlans();
+        for (auto* fleet_plan : monster_fleet_plans)
             py_monster_fleet_plans.append(MonsterFleetPlanWrapper(MonsterFleetPlan(*fleet_plan)));
 
         return py_monster_fleet_plans;
@@ -550,7 +548,7 @@ namespace {
     // Wrappers for common UniverseObject class member funtions
     auto GetName(int object_id) -> py::object
     {
-        auto obj = Objects().get(object_id);
+        const auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "GetName: Couldn't get object with ID " << object_id;
             return py::object("");
@@ -558,19 +556,19 @@ namespace {
         return py::object(obj->Name());
     }
 
-    void SetName(int object_id, const std::string& name)
+    void SetName(int object_id, std::string name)
     {
-        auto obj = Objects().get(object_id);
+        auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "RenameUniverseObject: Couldn't get object with ID " << object_id;
             return;
         }
-        obj->Rename(name);
+        obj->Rename(std::move(name));
     }
 
     auto GetX(int object_id) -> double
     {
-        auto obj = Objects().get(object_id);
+        const auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "GetX: Couldn't get object with ID " << object_id;
             return UniverseObject::INVALID_POSITION;
@@ -580,7 +578,7 @@ namespace {
 
     auto GetY(int object_id) -> double
     {
-        auto obj = Objects().get(object_id);
+        const auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "GetY: Couldn't get object with ID " << object_id;
             return UniverseObject::INVALID_POSITION;
@@ -590,7 +588,7 @@ namespace {
 
     auto GetPos(int object_id) -> py::tuple
     {
-        auto obj = Objects().get(object_id);
+        const auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "GetPos: Couldn't get object with ID " << object_id;
             return py::make_tuple(UniverseObject::INVALID_POSITION,
@@ -601,7 +599,7 @@ namespace {
 
     auto GetOwner(int object_id) -> int
     {
-        auto obj = Objects().get(object_id);
+        const auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "GetOwner: Couldn't get object with ID " << object_id;
             return ALL_EMPIRES;
@@ -609,10 +607,11 @@ namespace {
         return obj->Owner();
     }
 
-    void AddSpecial(int object_id, const std::string special_name)
-    {
+    void AddSpecial(int object_id, std::string special_name) {
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
+
         // get the universe object and check if it exists
-        auto obj = Objects().get(object_id);
+        const auto obj = context.ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "AddSpecial: Couldn't get object with ID " << object_id;
             return;
@@ -624,15 +623,14 @@ namespace {
             return;
         }
 
-        float capacity = special->InitialCapacity(object_id);
+        float capacity = special->InitialCapacity(object_id, context);
 
-        obj->AddSpecial(special_name, capacity);
+        obj->AddSpecial(std::move(special_name), capacity, context.current_turn);
     }
 
-    void RemoveSpecial(int object_id, const std::string special_name)
-    {
+    void RemoveSpecial(int object_id, const std::string special_name) {
         // get the universe object and check if it exists
-        auto obj = Objects().get(object_id);
+        const auto obj = ServerApp::GetApp()->GetContext().ContextObjects().getRaw(object_id);
         if (!obj) {
             ErrorLogger() << "RemoveSpecial: Couldn't get object with ID " << object_id;
             return;
@@ -648,23 +646,23 @@ namespace {
     auto GetAllObjects() -> py::list
     {
         py::list py_all_objects;
-        for (const auto& object : Objects().all()) {
-            py_all_objects.append(object->ID());
-        }
+        for (auto oid : ServerApp::GetApp()->GetContext().ContextObjects().allWithIDs() | range_keys)
+            py_all_objects.append(oid);
         return py_all_objects;
     }
 
     auto GetSystems() -> py::list
     {
         py::list py_systems;
-        for (const auto& system : Objects().all<System>()) {
+        for (const auto* system : ServerApp::GetApp()->GetContext().ContextObjects().allRaw<System>())
             py_systems.append(system->ID());
-        }
         return py_systems;
     }
 
     auto CreateSystem(StarType star_type, const std::string& star_name, double x, double y) -> int
     {
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
+
         // Check if star type is set to valid value
         if ((star_type == StarType::INVALID_STAR_TYPE) || (star_type == StarType::NUM_STAR_TYPES)) {
             ErrorLogger() << "CreateSystem : Can't create a system with a star of type " << star_type;
@@ -672,8 +670,9 @@ namespace {
         }
 
         // Create system and insert it into the object map
-        auto& universe = GetUniverse();
-        auto system = universe.InsertNew<System>(star_type, star_name, x, y, CurrentTurn());
+        auto& universe = context.ContextUniverse();
+        const int turn = context.current_turn;
+        auto system = universe.InsertNew<System>(star_type, star_name, x, y, turn);
         if (!system) {
             ErrorLogger() << "CreateSystem : Attempt to insert system into the object map failed";
             return INVALID_OBJECT_ID;
@@ -682,9 +681,12 @@ namespace {
         return system->SystemID();
     }
 
-    auto CreatePlanet(PlanetSize size, PlanetType planet_type, int system_id, int orbit, const std::string& name) -> int
+    auto CreatePlanet(PlanetSize size, PlanetType planet_type, int system_id,
+                      int orbit, const std::string& name) -> int
     {
-        auto system = Objects().get<System>(system_id);
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
+
+        auto system = context.ContextObjects().getRaw<System>(system_id);
 
         // Perform some validity checks
         // Check if system with id system_id exists
@@ -694,7 +696,7 @@ namespace {
         }
 
         // Check if orbit number is within allowed range
-        if ((orbit < 0) || (orbit >= system->Orbits())) {
+        if ((orbit < 0) || (orbit >= static_cast<int>(system->Orbits()))) {
             ErrorLogger() << "CreatePlanet : There is no orbit " << orbit << " in system " << system_id;
             return INVALID_OBJECT_ID;
         }
@@ -719,21 +721,22 @@ namespace {
 
         // Check if planet type and size match
         // if type is gas giant, size must be too, same goes for asteroids
-        if (((planet_type == PlanetType::PT_GASGIANT) && (size != PlanetSize::SZ_GASGIANT)) || ((planet_type == PlanetType::PT_ASTEROIDS) && (size != PlanetSize::SZ_ASTEROIDS))) {
+        if (((planet_type == PlanetType::PT_GASGIANT) && (size != PlanetSize::SZ_GASGIANT)) ||
+            ((planet_type == PlanetType::PT_ASTEROIDS) && (size != PlanetSize::SZ_ASTEROIDS)))
+        {
             ErrorLogger() << "CreatePlanet : Planet of type " << planet_type << " can't have size " << size;
             return INVALID_OBJECT_ID;
         }
 
         // Create planet and insert it into the object map
-        auto& universe = GetUniverse();
-        auto planet = universe.InsertNew<Planet>(planet_type, size, CurrentTurn());
+        auto planet = context.ContextUniverse().InsertNew<Planet>(planet_type, size, context.current_turn);
         if (!planet) {
             ErrorLogger() << "CreateSystem : Attempt to insert planet into the object map failed";
             return INVALID_OBJECT_ID;
         }
 
         // Add planet to system map
-        system->Insert(std::shared_ptr<UniverseObject>(planet), orbit);
+        system->Insert(planet, orbit, context.current_turn, context.ContextObjects());
 
         // If a name has been specified, set planet name
         if (!(name.empty()))
@@ -744,15 +747,15 @@ namespace {
 
     auto CreateBuilding(const std::string& building_type, int planet_id, int empire_id) -> int
     {
-        ScriptingContext context;
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
         ObjectMap& objects = context.ContextObjects();
-        auto planet = objects.get<Planet>(planet_id);
+        auto planet = objects.getRaw<Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "CreateBuilding: couldn't get planet with ID " << planet_id;
             return INVALID_OBJECT_ID;
         }
 
-        auto system = objects.get<System>(planet->SystemID());
+        auto system = objects.getRaw<System>(planet->SystemID());
         if (!system) {
             ErrorLogger() << "CreateBuilding: couldn't get system for planet";
             return INVALID_OBJECT_ID;
@@ -771,7 +774,7 @@ namespace {
             return INVALID_OBJECT_ID;
         }
 
-        system->Insert(building);
+        system->Insert(building, System::NO_ORBIT, context.current_turn, context.ContextObjects());
         planet->AddBuilding(building->ID());
         building->SetPlanetID(planet_id);
         return building->ID();
@@ -779,24 +782,25 @@ namespace {
 
     auto CreateFleet(const std::string& name, int system_id, int empire_id, bool aggressive = false) -> int
     {
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
+
         // Get system and check if it exists
-        auto system = Objects().get<System>(system_id);
+        auto system = context.ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "CreateFleet: couldn't get system with ID " << system_id;
             return INVALID_OBJECT_ID;
         }
 
         // Create new fleet at the position of the specified system
-        auto& universe = GetUniverse();
-        auto fleet = universe.InsertNew<Fleet>(name, system->X(), system->Y(),
-                                               empire_id, CurrentTurn());
+        auto fleet = context.ContextUniverse().InsertNew<Fleet>(name, system->X(), system->Y(),
+                                                                empire_id, context.current_turn);
         if (!fleet) {
             ErrorLogger() << "CreateFleet: couldn't create new fleet";
             return INVALID_OBJECT_ID;
         }
 
         // Insert fleet into specified system
-        system->Insert(fleet);
+        system->Insert(fleet, System::NO_ORBIT, context.current_turn, context.ContextObjects());
 
         // check if we got a fleet name...
         if (name.empty()) {
@@ -813,12 +817,12 @@ namespace {
     auto CreateShip(const std::string& name, const std::string& design_name,
                     const std::string& species, int fleet_id) -> int
     {
-        ScriptingContext context;
+        ScriptingContext& context = ServerApp::GetApp()->GetContext();
         Universe& universe = context.ContextUniverse();
         ObjectMap& objects = context.ContextObjects();
 
         // check if we got a species name, if yes, check if species exists
-        if (!species.empty() && !GetSpecies(species)) {
+        if (!species.empty() && !context.species.GetSpecies(species)) {
             ErrorLogger() << "CreateShip: invalid species specified";
             return INVALID_OBJECT_ID;
         }
@@ -831,13 +835,13 @@ namespace {
         }
 
         // get fleet and check if it exists
-        auto fleet = objects.get<Fleet>(fleet_id);
+        auto fleet = objects.getRaw<const Fleet>(fleet_id);
         if (!fleet) {
             ErrorLogger() << "CreateShip: couldn't get fleet with ID " << fleet_id;
             return INVALID_OBJECT_ID;
         }
 
-        auto system = objects.get<System>(fleet->SystemID());
+        auto system = objects.getRaw<const System>(fleet->SystemID());
         if (!system) {
             ErrorLogger() << "CreateShip: couldn't get system for fleet";
             return INVALID_OBJECT_ID;
@@ -857,12 +861,12 @@ namespace {
 
         // create new ship
         auto ship = universe.InsertNew<Ship>(empire_id, ship_design->ID(), species, universe,
-                                             GetSpeciesManager(), empire_id, CurrentTurn());
+                                             context.species, empire_id, context.current_turn);
         if (!ship) {
             ErrorLogger() << "CreateShip: couldn't create new ship";
             return INVALID_OBJECT_ID;
         }
-        system->Insert(ship);
+        system->Insert(ship, System::NO_ORBIT, context.current_turn, objects);
 
         // set ship name
         // check if we got a ship name...
@@ -897,7 +901,8 @@ namespace {
         return ship->ID();
     }
 
-    auto CreateFieldImpl(const std::string& field_type_name, double x, double y, double size) -> std::shared_ptr<Field>
+    auto CreateFieldImpl(const std::string& field_type_name, double x, double y, double size,
+                         ScriptingContext& context) -> std::shared_ptr<Field>
     {
         // check if a field type with the specified field type name exists and get the field type
         const FieldType* field_type = GetFieldType(field_type_name);
@@ -917,8 +922,7 @@ namespace {
         }
 
         // create the new field
-        auto& universe = GetUniverse();
-        auto field = universe.InsertNew<Field>(field_type_name, x, y, size, CurrentTurn());
+        auto field = context.ContextUniverse().InsertNew<Field>(field_type_name, x, y, size, context.current_turn);
         if (!field) {
             ErrorLogger() << "CreateFieldImpl: couldn't create field";
             return nullptr;
@@ -931,7 +935,7 @@ namespace {
 
     auto CreateField(const std::string& field_type_name, double x, double y, double size) -> int
     {
-        if (auto field = CreateFieldImpl(field_type_name, x, y, size))
+        if (auto field = CreateFieldImpl(field_type_name, x, y, size, ServerApp::GetApp()->GetContext()))
             return field->ID();
         else
             return INVALID_OBJECT_ID;
@@ -939,28 +943,32 @@ namespace {
 
     auto CreateFieldInSystem(const std::string& field_type_name, double size, int system_id) -> int
     {
+        auto& context = ServerApp::GetApp()->GetContext();
+
         // check if system exists and get system
-        auto system = Objects().get<System>(system_id);
+        auto system = context.ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "CreateFieldInSystem: couldn't get system with ID " << system_id;
             return INVALID_OBJECT_ID;
         }
         // create the field with the coordinates of the system
-        auto field = CreateFieldImpl(field_type_name, system->X(), system->Y(), size);
+        auto field = CreateFieldImpl(field_type_name, system->X(), system->Y(), size, context);
         if (!field)
             return INVALID_OBJECT_ID;
-        system->Insert(field); // insert the field into the system
-        return field->ID();
+        int field_id = field->ID();
+        system->Insert(std::move(field), System::NO_ORBIT, context.current_turn, context.ContextObjects());
+        return field_id;
     }
 
     // Return a list of system ids of universe objects with @p obj_ids.
     auto ObjectsGetSystems(const py::list& obj_ids) -> py::list
     {
+        const auto& objs = ServerApp::GetApp()->GetContext().ContextObjects();
         py::list py_systems;
         py::stl_input_iterator<int> end;
         for (py::stl_input_iterator<int> id(obj_ids);
              id != end; ++id) {
-            if (auto obj = Objects().get(*id)) {
+            if (auto obj = objs.getRaw(*id)) {
                 py_systems.append(obj->SystemID());
             } else {
                 ErrorLogger() << "Passed an invalid universe object id " << *id;
@@ -971,13 +979,13 @@ namespace {
     }
 
     // Return all systems within \p jumps of \p sys_ids
-    auto SystemsWithinJumps(size_t jumps, const py::list& sys_ids) -> py::list
+    auto SystemsWithinJumps(std::size_t jumps, const py::list& sys_ids) -> py::list
     {
         py::list py_systems;
         py::stl_input_iterator<int> end;
 
         std::vector<int> systems{py::stl_input_iterator<int>(sys_ids), end};
-        auto systems_in_vicinity = GetUniverse().GetPathfinder()->WithinJumps(jumps, std::move(systems));
+        auto systems_in_vicinity = ServerApp::GetApp()->GetContext().ContextUniverse().GetPathfinder().WithinJumps(jumps, std::move(systems));
 
         TraceLogger() << "within " << jumps << " jumps: " << systems_in_vicinity.size() << " systems";
 
@@ -990,7 +998,7 @@ namespace {
     // Wrappers for System class member functions
     auto SystemGetStarType(int system_id) -> StarType
     {
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemGetStarType: couldn't get system with ID " << system_id;
             return StarType::INVALID_STAR_TYPE;
@@ -1005,7 +1013,7 @@ namespace {
             return;
         }
 
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemSetStarType : Couldn't get system with ID " << system_id;
             return;
@@ -1016,7 +1024,7 @@ namespace {
 
     auto SystemGetNumOrbits(int system_id) -> int
     {
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemGetNumOrbits : Couldn't get system with ID " << system_id;
             return 0;
@@ -1027,19 +1035,19 @@ namespace {
     auto SystemFreeOrbits(int system_id) -> py::list
     {
         py::list py_orbits;
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemFreeOrbits : Couldn't get system with ID " << system_id;
             return py_orbits;
         }
         for (int orbit_idx : system->FreeOrbits())
-        { py_orbits.append(orbit_idx); }
+            py_orbits.append(orbit_idx);
         return py_orbits;
     }
 
     auto SystemOrbitOccupied(int system_id, int orbit) -> bool
     {
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemOrbitOccupied : Couldn't get system with ID " << system_id;
             return 0;
@@ -1049,7 +1057,7 @@ namespace {
 
     auto SystemOrbitOfPlanet(int system_id, int planet_id) -> int
     {
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemOrbitOfPlanet : Couldn't get system with ID " << system_id;
             return 0;
@@ -1060,26 +1068,26 @@ namespace {
     auto SystemGetPlanets(int system_id) -> py::list
     {
         py::list py_planets;
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemGetPlanets : Couldn't get system with ID " << system_id;
             return py_planets;
         }
         for (int planet_id : system->PlanetIDs())
-        { py_planets.append(planet_id); }
+            py_planets.append(planet_id);
         return py_planets;
     }
 
     auto SystemGetFleets(int system_id) -> py::list
     {
         py::list py_fleets;
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemGetFleets : Couldn't get system with ID " << system_id;
             return py_fleets;
         }
         for (int fleet_id : system->FleetIDs())
-        { py_fleets.append(fleet_id); }
+            py_fleets.append(fleet_id);
         return py_fleets;
     }
 
@@ -1087,33 +1095,27 @@ namespace {
     {
         py::list py_starlanes;
         // get source system
-        auto system = Objects().get<System>(system_id);
+        auto system = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const System>(system_id);
         if (!system) {
             ErrorLogger() << "SystemGetStarlanes : Couldn't get system with ID " << system_id;
             return py_starlanes;
         }
         // get list of systems the source system has starlanes to
-        // we actually get a map of ids and a bool indicating if the entry is a starlane (false) or wormhole (true)
-        // iterate over the map we got, only copy starlanes to the python list object we are going to return
-        for (const auto& lane : system->StarlanesWormholes()) {
-            // if the bool value is false, we have a starlane
-            // in this case copy the destination system id to our starlane list
-            if (!(lane.second)) {
-                py_starlanes.append(lane.first);
-            }
-        }
+        for (const auto lane_to_id : system->Starlanes())
+            py_starlanes.append(lane_to_id);
         return py_starlanes;
     }
 
     void SystemAddStarlane(int from_sys_id, int to_sys_id)
     {
+        auto& objs = ServerApp::GetApp()->GetContext().ContextObjects();
         // get source and destination system, check that both exist
-        auto from_sys = Objects().get<System>(from_sys_id);
+        auto from_sys = objs.getRaw<System>(from_sys_id);
         if (!from_sys) {
             ErrorLogger() << "SystemAddStarlane : Couldn't find system with ID " << from_sys_id;
             return;
         }
-        auto to_sys = Objects().get<System>(to_sys_id);
+        auto to_sys = objs.getRaw<System>(to_sys_id);
         if (!to_sys) {
             ErrorLogger() << "SystemAddStarlane : Couldn't find system with ID " << to_sys_id;
             return;
@@ -1125,13 +1127,14 @@ namespace {
 
     void SystemRemoveStarlane(int from_sys_id, int to_sys_id)
     {
+        auto& objs = ServerApp::GetApp()->GetContext().ContextObjects();
         // get source and destination system, check that both exist
-        auto from_sys = Objects().get<System>(from_sys_id);
+        auto from_sys = objs.getRaw<System>(from_sys_id);
         if (!from_sys) {
             ErrorLogger() << "SystemRemoveStarlane : Couldn't find system with ID " << from_sys_id;
             return;
         }
-        auto to_sys = Objects().get<System>(to_sys_id);
+        auto to_sys = objs.getRaw<System>(to_sys_id);
         if (!to_sys) {
             ErrorLogger() << "SystemRemoveStarlane : Couldn't find system with ID " << to_sys_id;
             return;
@@ -1144,7 +1147,7 @@ namespace {
     // Wrapper for Planet class member functions
     auto PlanetGetType(int planet_id) -> PlanetType
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetGetType: Couldn't get planet with ID " << planet_id;
             return PlanetType::INVALID_PLANET_TYPE;
@@ -1154,7 +1157,7 @@ namespace {
 
     void PlanetSetType(int planet_id, PlanetType planet_type)
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetSetType: Couldn't get planet with ID " << planet_id;
             return;
@@ -1173,7 +1176,7 @@ namespace {
 
     auto PlanetGetSize(int planet_id) -> PlanetSize
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetGetSize: Couldn't get planet with ID " << planet_id;
             return PlanetSize::INVALID_PLANET_SIZE;
@@ -1183,7 +1186,7 @@ namespace {
 
     void PlanetSetSize(int planet_id, PlanetSize planet_size)
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetSetSize: Couldn't get planet with ID " << planet_id;
             return;
@@ -1200,7 +1203,7 @@ namespace {
 
     auto PlanetGetSpecies(int planet_id) -> py::object
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetGetSpecies: Couldn't get planet with ID " << planet_id;
             return py::object("");
@@ -1210,17 +1213,18 @@ namespace {
 
     void PlanetSetSpecies(int planet_id, const std::string& species_name)
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto& context = ServerApp::GetApp()->GetContext();
+        auto planet = context.ContextObjects().getRaw<Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetSetSpecies: Couldn't get planet with ID " << planet_id;
             return;
         }
-        planet->SetSpecies(species_name);
+        planet->SetSpecies(species_name, context.current_turn, context.species);
     }
 
     auto PlanetGetFocus(int planet_id) -> py::object
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = ServerApp::GetApp()->GetContext().ContextObjects().getRaw<const Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetGetFocus: Couldn't get planet with ID " << planet_id;
             return py::object("");
@@ -1230,33 +1234,35 @@ namespace {
 
     void PlanetSetFocus(int planet_id, const std::string& focus)
     {
-        auto planet = Objects().get<Planet>(planet_id);
+        auto& context = ServerApp::GetApp()->GetContext();
+        auto planet = context.ContextObjects().getRaw<Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetSetSpecies: Couldn't get planet with ID " << planet_id;
             return;
         }
-        planet->SetFocus(focus);
+        planet->SetFocus(focus, context);
     }
 
     auto PlanetAvailableFoci(int planet_id) -> py::list
     {
+        auto& context = ServerApp::GetApp()->GetContext();
         py::list py_foci;
-        auto planet = Objects().get<Planet>(planet_id);
+        auto planet = context.ContextObjects().getRaw<const Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetAvailableFoci: Couldn't get planet with ID " << planet_id;
             return py_foci;
         }
-        for (const std::string& focus : planet->AvailableFoci()) {
-            py_foci.append(py::object(focus));
-        }
+        for (const auto& focus : planet->AvailableFoci(context))
+            py_foci.append(py::object(std::string{focus}));
+
         return py_foci;
     }
 
     auto PlanetMakeOutpost(int planet_id, int empire_id) -> bool
     {
-        ScriptingContext context;
+        auto& context = ServerApp::GetApp()->GetContext();
 
-        auto planet = context.ContextObjects().get<Planet>(planet_id);
+        auto planet = context.ContextObjects().getRaw<Planet>(planet_id);
         if (!planet) {
             ErrorLogger() << "PlanetMakeOutpost: couldn't get planet with ID:" << planet_id;
             return false;
@@ -1272,7 +1278,7 @@ namespace {
 
     auto PlanetMakeColony(int planet_id, int empire_id, const std::string& species, double population) -> bool
     {
-        ScriptingContext context;
+        auto& context = ServerApp::GetApp()->GetContext();
 
         auto planet = context.ContextObjects().get<Planet>(planet_id);
         if (!planet) {
@@ -1298,7 +1304,7 @@ namespace {
 
     auto PlanetCardinalSuffix(int planet_id) -> py::object
     {
-        const ScriptingContext context;
+        const auto& context = ServerApp::GetApp()->GetContext();
 
         auto planet = context.ContextObjects().get<Planet>(planet_id);
         if (!planet) {
@@ -1340,9 +1346,13 @@ namespace FreeOrionPython {
             .def("spawn_limit",                 &MonsterFleetPlanWrapper::SpawnLimit)
             .def("locations",                   &MonsterFleetPlanWrapper::Locations);
 
-        py::def("get_universe",                 GetUniverse,                    py::return_value_policy<py::reference_existing_object>());
-        py::def("get_all_empires",              GetAllEmpires);
-        py::def("get_empire",                   GetEmpire,                      py::return_value_policy<py::reference_existing_object>());
+        py::def("get_universe",
+                +[]() -> const Universe& { return ServerApp::GetApp()->GetUniverse(); },
+                py::return_value_policy<py::reference_existing_object>());
+        py::def("get_all_empires",              GetAllEmpiresIDs);
+        py::def("get_empire",
+                +[](int id) -> const Empire* { return ServerApp::GetApp()->GetEmpire(id); },
+                py::return_value_policy<py::reference_existing_object>());
 
         py::def("userString",
                 +[](const std::string& key) -> const std::string& { return UserString(key); },
@@ -1360,10 +1370,10 @@ namespace FreeOrionPython {
         py::def("invalid_position",                 +[]() -> double { return UniverseObject::INVALID_POSITION; });
 
         py::def("get_galaxy_setup_data",            GetGalaxySetupData,             py::return_value_policy<py::reference_existing_object>());
-        py::def("current_turn",                     CurrentTurn);
+        py::def("current_turn",                     +[]() -> int { return ServerApp::GetApp()->GetContext().current_turn; });
         py::def("generate_sitrep",                  GenerateSitRep);
         py::def("generate_sitrep",                  +[](int empire_id, const std::string& template_string, const std::string& icon) { GenerateSitRep(empire_id, template_string, py::dict(), icon); });
-        py::def("generate_starlanes",               +[](int max_jumps_between_systems, int max_starlane_length) { GenerateStarlanes(max_jumps_between_systems, max_starlane_length, GetUniverse(), Empires()); });
+        py::def("generate_starlanes",               +[](int max_jumps_between_systems, int max_starlane_length) { auto& context = ServerApp::GetApp()->GetContext(); GenerateStarlanes(max_jumps_between_systems, max_starlane_length, context.ContextUniverse(), context.Empires()); });
 
         py::def("species_preferred_focus",          SpeciesDefaultFocus);
         py::def("species_get_planet_environment",   SpeciesGetPlanetEnvironment);
@@ -1385,6 +1395,7 @@ namespace FreeOrionPython {
         py::def("empire_unlock_item",               EmpireUnlockItem);
         py::def("empire_add_ship_design",           EmpireAddShipDesign);
         py::def("empire_set_stockpile",             EmpireSetStockpile);
+        py::def("empire_set_diplomacy",             EmpireSetDiplomacy);
 
         py::def("design_create",                    ShipDesignCreate);
         py::def("design_get_premade_list",          ShipDesignGetPremadeList);
@@ -1404,10 +1415,10 @@ namespace FreeOrionPython {
         py::def("add_special",                      AddSpecial);
         py::def("remove_special",                   RemoveSpecial);
 
-        py::def("get_universe_width",               +[]() -> double { return GetUniverse().UniverseWidth(); });
-        py::def("set_universe_width",               +[](double width) { GetUniverse().SetUniverseWidth(width); });
-        py::def("linear_distance",                  +[](int system1_id, int system2_id) -> double { return GetUniverse().GetPathfinder()->LinearDistance(system1_id, system2_id, Objects()); });
-        py::def("jump_distance",                    +[](int system1_id, int system2_id) -> int { return GetUniverse().GetPathfinder()->JumpDistanceBetweenSystems(system1_id, system2_id); });
+        py::def("get_universe_width",               +[]() -> double { return ServerApp::GetApp()->GetContext().ContextUniverse().UniverseWidth(); });
+        py::def("set_universe_width",               +[](double width) { ServerApp::GetApp()->GetContext().ContextUniverse().SetUniverseWidth(width); });
+        py::def("linear_distance",                  +[](int system1_id, int system2_id) -> double { const auto& context = ServerApp::GetApp()->GetContext(); return context.ContextUniverse().GetPathfinder().LinearDistance(system1_id, system2_id, context.ContextObjects()); });
+        py::def("jump_distance",                    +[](int system1_id, int system2_id) -> int { return ServerApp::GetApp()->GetContext().ContextUniverse().GetPathfinder().JumpDistanceBetweenSystems(system1_id, system2_id); });
         py::def("get_all_objects",                  GetAllObjects);
         py::def("get_systems",                      GetSystems);
         py::def("create_system",                    CreateSystem);

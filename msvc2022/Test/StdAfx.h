@@ -81,7 +81,6 @@
 #include <boost/type_traits/remove_const.hpp>
 #include <boost/uuid/nil_generator.hpp>
 #include <boost/uuid/uuid.hpp>
-#include <boost/variant.hpp>
 
 // GiGi
 #include <cassert>
@@ -100,8 +99,6 @@
 #include <boost/graph/graph_concepts.hpp>
 #include <boost/mpl/assert.hpp>
 #include <boost/signals2/trackable.hpp>
-#include <boost/type_traits/is_integral.hpp>
-#include <boost/utility/enable_if.hpp>
 
 // FreeOrion
 #include <initializer_list>
@@ -123,7 +120,6 @@
 #include <algorithm>
 
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/cast.hpp>
 
 #ifdef _MSC_VER
 // Note: This is a workaround for Visual C++ non-conformant pre-processor

@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import freeOrionAIInterface as fo
 from collections import defaultdict
+from collections.abc import Iterator, Mapping
 from copy import copy
 from enum import Enum
 from itertools import chain
-from typing import DefaultDict, Iterator, List, Mapping, NamedTuple, Set, Tuple, Union
+from typing import NamedTuple
 
 from aistate_interface import get_aistate
 from common.fo_typing import BuildingId, BuildingName, PlanetId, SystemId
@@ -32,7 +33,7 @@ from turn_state import get_all_empire_planets
 
 
 @cache_for_current_turn
-def get_empire_drydocks() -> Mapping[SystemId, Tuple[PlanetId]]:
+def get_empire_drydocks() -> Mapping[SystemId, tuple[PlanetId]]:
     """
     Return a map from system ids to planet ids where empire drydocks are located.
     """
@@ -44,20 +45,12 @@ def get_empire_drydocks() -> Mapping[SystemId, Tuple[PlanetId]]:
     return ReadOnlyDict({k: tuple(v) for k, v in drydocks.items()})
 
 
-class _BuildingOperations:
+class BuildingTypeBase:
     """
     Mixin class for building enums.
 
     This class contains operations that applicable for all building enums.
     """
-
-    @classmethod
-    def get(cls, name: BuildingName):
-        """Get BuildType for a given BuildingName."""
-        for bt in BuildingType:
-            if bt.value == name:
-                return bt
-        raise ValueError(f"{cls.__name__}.get(): got unknown name {name}")
 
     def is_this_type(self, building_id: BuildingId):
         """Return whether the building with the given identifier is of this type."""
@@ -82,31 +75,31 @@ class _BuildingOperations:
         """
         return get_planet_opinion(self.value)
 
-    def queued_at(self) -> List[PlanetId]:
+    def queued_at(self) -> list[PlanetId]:
         """
         Return list of planet ids where this building is queued.
         """
         return [element.locationID for element in fo.getEmpire().productionQueue if (element.name == self.value)]
 
-    def queued_at_sys(self) -> List[PlanetId]:
+    def queued_at_sys(self) -> list[PlanetId]:
         """
         Return list of system ids where this building is queued.
         """
         return [fo.getUniverse().getPlanet(pid).systemID for pid in self.queued_at()]
 
-    def built_at(self) -> Set[PlanetId]:
+    def built_at(self) -> set[PlanetId]:
         """
         Return List of planet ids where the building exists.
         """
         return _get_building_locations()[self.value].planets
 
-    def built_at_sys(self) -> Set[SystemId]:
+    def built_at_sys(self) -> set[SystemId]:
         """
         Return List of system ids where the building exists.
         """
         return _get_building_locations()[self.value].systems
 
-    def built_or_queued_at(self) -> Set[PlanetId]:
+    def built_or_queued_at(self) -> set[PlanetId]:
         """
         Return List of planet ids where the building either exists or is queued.
         """
@@ -115,7 +108,7 @@ class _BuildingOperations:
         ret.update(set(self.queued_at()))
         return ret
 
-    def built_or_queued_at_sys(self) -> Set[SystemId]:
+    def built_or_queued_at_sys(self) -> set[SystemId]:
         """
         Return List of system ids where the building either exists or is queued.
         """
@@ -159,7 +152,7 @@ class _BuildingOperations:
         return _prerequisites.get(self, None)
 
 
-class BuildingType(_BuildingOperations, Enum):
+class BuildingType(BuildingTypeBase, Enum):
     """
     Represent basic buildings.
 
@@ -198,7 +191,7 @@ class BuildingType(_BuildingOperations, Enum):
     XENORESURRECTION_LAB = "BLD_XENORESURRECTION_LAB"
 
 
-class Shipyard(_BuildingOperations, Enum):
+class Shipyard(BuildingTypeBase, Enum):
     """
     Represent buildings required to build ships.
     """
@@ -222,7 +215,7 @@ class Shipyard(_BuildingOperations, Enum):
         return frozenset({Shipyard.ASTEROID, Shipyard.ASTEROID_REF})
 
 
-def iterate_buildings_types() -> Iterator[Union[BuildingType, Shipyard]]:
+def iterate_buildings_types() -> Iterator[BuildingType | Shipyard]:
     """
     Iterator over all building types.
     """
@@ -234,13 +227,13 @@ class _BuildingLocations(NamedTuple):
     A set of planets and systems that already contain a building.
     """
 
-    planets: Set[PlanetId]
-    systems: Set[SystemId]
+    planets: set[PlanetId]
+    systems: set[SystemId]
 
 
 # Cannot use BuildingType as key since not all buildings may have an enum value
 @cache_for_current_turn
-def _get_building_locations() -> DefaultDict[BuildingName, _BuildingLocations]:
+def _get_building_locations() -> defaultdict[BuildingName, _BuildingLocations]:
     universe = fo.getUniverse()
     ret = defaultdict(lambda: _BuildingLocations(set(), set()))
     for pid in get_all_empire_planets():

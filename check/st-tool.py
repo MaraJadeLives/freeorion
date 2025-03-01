@@ -14,8 +14,9 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from collections import OrderedDict
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Iterator, NamedTuple
+from typing import NamedTuple
 
 STRING_TABLE_KEY_PATTERN = re.compile(r"^[A-Z0-9_]+$")
 # Provides the named capture groups 'ref_type' and 'key'
@@ -136,7 +137,7 @@ class StringTable:
     def __len__(self):
         return len(self._ientries)
 
-    def __str__(self):
+    def __str__(self):  # noqa: C901
         result = ""
         result += self.language + "\n"
 
@@ -172,13 +173,13 @@ class StringTable:
         return result
 
     def __repr__(self):
-        return "StringTable(fpath={}, language={}, entries={})".format(self.fpath, self.language, self.entries)
+        return f"StringTable(fpath={self.fpath}, language={self.language}, entries={self.entries})"
 
     def items(self):
         return self._entries
 
     @staticmethod
-    def set_author(fpath, entries, blames):
+    def set_author(fpath, entries, blames):  # noqa: C901
         blame_cmd = ["git", "blame", "--incremental", fpath]
         git_blame = subprocess.check_output(blame_cmd)
         git_blame = git_blame.decode("utf-8", "strict")
@@ -216,7 +217,7 @@ class StringTable:
                     continue
                 if entry.key not in value_times or len(value_times[entry.key]) != len(entry.value_times):
                     raise RuntimeError(
-                        "{}: git blame did not collect any matching author times for key {}".format(fpath, entry.key)
+                        f"{fpath}: git blame did not collect any matching author times for key {entry.key}"
                     )
                 entry.value_times = value_times[entry.key]
 
@@ -225,8 +226,7 @@ class StringTable:
         return StringTable.from_text(fhandle.read(), fhandle.name, with_blame=with_blame)
 
     @staticmethod
-    def from_text(text, fpath, with_blame=True) -> "StringTable":
-
+    def from_text(text, fpath, with_blame=True) -> "StringTable":  # noqa: C901
         is_quoted = False
 
         language = None
@@ -265,7 +265,7 @@ class StringTable:
                             StringTableEntry(untranslated_key, untranslated_keyline, None, notes, untranslated_lines)
                         )
                     except ValueError as e:
-                        raise ValueError("{}:{}: {}".format(fpath, keyline, str(e)))
+                        raise ValueError(f"{fpath}:{keyline}: {str(e)}")
                     untranslated_key = None
                     untranslated_keyline = None
                     notes = []
@@ -312,7 +312,7 @@ class StringTable:
                             StringTableEntry(untranslated_key, untranslated_keyline, None, notes, untranslated_lines)
                         )
                     except ValueError as e:
-                        raise ValueError("{}:{}: {}".format(fpath, keyline, str(e)))
+                        raise ValueError(f"{fpath}:{keyline}: {str(e)}")
                     untranslated_key = None
                     untranslated_keyline = None
                     notes = []
@@ -378,7 +378,7 @@ class StringTable:
         return StringTable(fpath, language, fnotes, includes, entries)
 
     @staticmethod
-    def statistic(left: "StringTable", right: "StringTable"):
+    def statistic(left: "StringTable", right: "StringTable"):  # noqa: C901
         class STStatistic(NamedTuple):
             left: "StringTable"
             left_only: set
@@ -794,7 +794,7 @@ class EditServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain ; charset=utf-8")
         self.send_header(
-            "Content-Disposition", 'attachment; filename="{}"'.format(os.path.basename(self.server.source_st.fpath))
+            "Content-Disposition", f'attachment; filename="{os.path.basename(self.server.source_st.fpath)}"'
         )
         self.end_headers()
 
@@ -941,7 +941,6 @@ def check_action(args):
                     reference_key = match["key"]
                     references.add(reference_key)
                     if reference_key not in source_st:
-
                         if match["ref_type"].strip() in OPTIONAL_REF_TYPES:
                             continue
 

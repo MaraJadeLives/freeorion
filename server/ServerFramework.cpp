@@ -5,6 +5,7 @@
 #include "../python/CommonWrappers.h"
 
 #include "../util/Logger.h"
+#include "../util/Directories.h"
 #include "../universe/Condition.h"
 #include "../universe/Universe.h"
 
@@ -45,7 +46,6 @@ BOOST_PYTHON_MODULE(freeorion) {
 
     FreeOrionPython::SetWrapper<std::set<int>>::Wrap("IntSet");
     FreeOrionPython::SetWrapper<std::set<std::string>>::Wrap("StringSet");
-    FreeOrionPython::SetWrapper<std::set<std::string, std::less<>>>::Wrap("StringSet2");
 }
 
 
@@ -63,31 +63,34 @@ auto PythonServer::InitModules() -> bool
     // Confirm existence of the directory containing the universe generation
     // Python scripts and add it to Pythons sys.path to make sure Python will
     // find our scripts
-    if (!fs::exists(GetPythonUniverseGeneratorDir())) {
-        ErrorLogger() << "Can't find folder containing universe generation scripts";
+    auto python_universe_generator_dir = GetPythonUniverseGeneratorDir();
+    if (!fs::exists(python_universe_generator_dir)) {
+        ErrorLogger() << "Can't find folder containing universe generation scripts: " << PathToString(python_universe_generator_dir);
         return false;
     }
-    AddToSysPath(GetPythonUniverseGeneratorDir());
+    AddToSysPath(python_universe_generator_dir);
 
     // Confirm existence of the directory containing the turn event Python
     // scripts and add it to Pythons sys.path to make sure Python will find
     // our scripts
-    if (!fs::exists(GetPythonTurnEventsDir())) {
-        ErrorLogger() << "Can't find folder containing turn events scripts";
+    auto python_turn_events_dir = GetPythonTurnEventsDir();
+    if (!fs::exists(python_turn_events_dir)) {
+        ErrorLogger() << "Can't find folder containing turn events scripts:" << PathToString(python_turn_events_dir);
         return false;
     }
-    AddToSysPath(GetPythonTurnEventsDir());
+    AddToSysPath(python_turn_events_dir);
 
     // import universe generator script file
     m_python_module_turn_events = py::import("turn_events");
 
     // Confirm existence of the directory containing the auth Python scripts
     // and add it to Pythons sys.path to make sure Python will find our scripts
-    if (!fs::exists(GetPythonAuthDir())) {
-        ErrorLogger() << "Can't find folder containing auth scripts";
+    auto python_auth_dir = GetPythonAuthDir();
+    if (!fs::exists(python_auth_dir)) {
+        ErrorLogger() << "Can't find folder containing auth scripts:" << PathToString(python_auth_dir);
         return false;
     }
-    AddToSysPath(GetPythonAuthDir());
+    AddToSysPath(python_auth_dir);
 
     // import auth script file
     m_python_module_auth = py::import("auth");
@@ -107,14 +110,16 @@ auto PythonServer::InitModules() -> bool
     if (GetOptionsDB().Get<int>("network.server.python.asyncio-interval") > 0) {
         py::object asyncio = py::import("asyncio");
 
-        m_asyncio_event_loop = asyncio.attr("get_event_loop")();
+        m_asyncio_event_loop = asyncio.attr("new_event_loop")();
+	asyncio.attr("set_event_loop")(m_asyncio_event_loop);
     }
 
     DebugLogger() << "Server Python modules successfully initialized!";
     return true;
 }
 
-auto PythonServer::IsRequireAuthOrReturnRoles(const std::string& player_name, const std::string& ip_address, bool &result, Networking::AuthRoles& roles) const -> bool
+auto PythonServer::IsRequireAuthOrReturnRoles(const std::string& player_name, const std::string& ip_address,
+                                              bool &result, Networking::AuthRoles& roles) const -> bool
 {
     py::object auth_provider = m_python_module_auth.attr("__dict__")["auth_provider"];
     if (!auth_provider) {
@@ -140,7 +145,8 @@ auto PythonServer::IsRequireAuthOrReturnRoles(const std::string& player_name, co
     return true;
 }
 
-auto PythonServer::IsSuccessAuthAndReturnRoles(const std::string& player_name, const std::string& auth, bool &result, Networking::AuthRoles& roles) const -> bool
+auto PythonServer::IsSuccessAuthAndReturnRoles(const std::string& player_name, const std::string& auth,
+                                               bool &result, Networking::AuthRoles& roles) const -> bool
 {
     py::object auth_provider = m_python_module_auth.attr("__dict__")["auth_provider"];
     if (!auth_provider) {
@@ -167,32 +173,34 @@ auto PythonServer::IsSuccessAuthAndReturnRoles(const std::string& player_name, c
     return true;
 }
 
-auto PythonServer::FillListPlayers(std::list<PlayerSetupData>& players) const -> bool
+auto PythonServer::FillListPlayers(std::vector<PlayerSetupData>& players) const -> bool
 {
-    py::object auth_provider = m_python_module_auth.attr("__dict__")["auth_provider"];
+    const py::object auth_provider = m_python_module_auth.attr("__dict__")["auth_provider"];
     if (!auth_provider) {
         ErrorLogger() << "Unable to get Python object auth_provider";
         return false;
     }
-    py::object f = auth_provider.attr("list_players");
+    const py::object f = auth_provider.attr("list_players");
     if (!f) {
         ErrorLogger() << "Unable to call Python method list_players";
         return false;
     }
-    py::object r = f();
-    py::extract<py::list> py_players(r);
+    const py::object r = f();
+    const py::extract<py::list> py_players(r);
     if (py_players.check()) {
         py::stl_input_iterator<PlayerSetupData> players_begin(py_players), players_end;
-        for (auto& it = players_begin; it != players_end; ++it)
-            players.push_back(*it);
+        players.reserve(py::len(py_players));
+        players.insert(players.end(), players_begin, players_end);
     } else {
-        DebugLogger() << "Wrong players list data: check returns " << py::extract<std::string>(py::str(r))();
+        DebugLogger() << "Wrong players list data: check returns "
+                      << py::extract<std::string>(py::str(r))();
         return false;
     }
     return true;
 }
 
-auto PythonServer::GetPlayerDelegation(const std::string& player_name, std::list<std::string> &result) const -> bool
+auto PythonServer::GetPlayerDelegation(const std::string& player_name,
+                                       std::vector<std::string>& result) const -> bool
 {
     py::object auth_provider = m_python_module_auth.attr("__dict__")["auth_provider"];
     if (!auth_provider) {
@@ -208,10 +216,10 @@ auto PythonServer::GetPlayerDelegation(const std::string& player_name, std::list
     py::extract<py::list> py_players(r);
     if (py_players.check()) {
         py::stl_input_iterator<std::string> players_begin(py_players), players_end;
-        for (auto& it = players_begin; it != players_end; ++it)
-            result.push_back(*it);
+        result.insert(result.end(), players_begin, players_end);
     } else {
-        DebugLogger() << "Wrong delegated players list data: check returns " << py::extract<std::string>(py::str(r))();
+        DebugLogger() << "Wrong delegated players list data: check returns "
+                      << py::extract<std::string>(py::str(r))();
         return false;
     }
 
@@ -236,15 +244,15 @@ auto PythonServer::LoadChatHistory(boost::circular_buffer<ChatHistoryEntity>& ch
         py::stl_input_iterator<py::tuple> entity_begin(py_history), entity_end;
         for (auto& it = entity_begin; it != entity_end; ++it) {
             ChatHistoryEntity e;
-            e.timestamp = boost::posix_time::from_time_t(py::extract<time_t>((*it)[0]));;
+            e.timestamp = boost::posix_time::from_time_t(py::extract<time_t>((*it)[0]));
             e.player_name = py::extract<std::string>((*it)[1]);
             e.text = py::extract<std::string>((*it)[2]);
             py::tuple color = py::extract<py::tuple>((*it)[3]);
-            e.text_color = std::array<unsigned char, 4>{{
-                py::extract<unsigned char>(color[0]),
-                py::extract<unsigned char>(color[1]),
-                py::extract<unsigned char>(color[2]),
-                py::extract<unsigned char>(color[3])
+            e.text_color = std::array<uint8_t, 4>{{
+                py::extract<uint8_t>(color[0]),
+                py::extract<uint8_t>(color[1]),
+                py::extract<uint8_t>(color[2]),
+                py::extract<uint8_t>(color[3])
             }};
             chat_history.push_back(e);
         }
@@ -279,11 +287,12 @@ auto PythonServer::CreateUniverse(std::map<int, PlayerSetupData>& player_setup_d
     // Confirm existence of the directory containing the universe generation
     // Python scripts and add it to Pythons sys.path to make sure Python will
     // find our scripts
-    if (!fs::exists(GetPythonUniverseGeneratorDir())) {
-        ErrorLogger() << "Can't find folder containing universe generation scripts";
+    auto python_universe_generator_dir = GetPythonUniverseGeneratorDir();
+    if (!fs::exists(python_universe_generator_dir)) {
+        ErrorLogger() << "Can't find folder containing universe generation scripts: " << PathToString(python_universe_generator_dir);
         return false;
     }
-    AddToSysPath(GetPythonUniverseGeneratorDir());
+    AddToSysPath(python_universe_generator_dir);
 
     // import universe generator script file
     m_python_module_universe_generator = py::import("universe_generator");
@@ -335,14 +344,14 @@ auto PythonServer::AsyncIOTick() -> bool
     return true;
 }
 
-auto GetPythonUniverseGeneratorDir() -> const std::string
-{ return GetPythonDir() + "/universe_generation"; }
+auto GetPythonUniverseGeneratorDir() -> fs::path
+{ return GetPythonDir() / "universe_generation"; }
 
-auto GetPythonTurnEventsDir() -> const std::string
-{ return GetPythonDir() + "/turn_events"; }
+auto GetPythonTurnEventsDir() -> fs::path
+{ return GetPythonDir() / "turn_events"; }
 
-auto GetPythonAuthDir() -> const std::string
-{ return GetPythonDir() + "/auth"; }
+auto GetPythonAuthDir() -> fs::path
+{ return GetPythonDir() / "auth"; }
 
-auto GetPythonChatDir() -> const std::string
-{ return GetPythonDir() + "/chat"; }
+auto GetPythonChatDir() -> fs::path
+{ return GetPythonDir() / "chat"; }

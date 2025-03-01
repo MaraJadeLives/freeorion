@@ -53,27 +53,27 @@ public:
     ~MultiEdit() = default;
     void CompleteConstruction() override;
 
-    Pt MinUsableSize() const override;
+    Pt MinUsableSize() const noexcept override;
 
-    Pt ClientLowerRight() const override;
+    Pt ClientLowerRight() const noexcept override { return Edit::ClientLowerRight() - Pt(RightMargin(), BottomMargin()); }
 
     /** Returns the size to show the whole text without scrollbars. */
-    Pt FullSize() const;
+    Pt FullSize() const noexcept { return Pt(Width(), m_contents_sz.y + Y(PIXEL_MARGIN) * 2); }
 
     /** Returns the style flags for this MultiEdit. */
-    Flags<MultiEditStyle> Style() const;
+    auto Style() const noexcept { return m_style; }
 
     /** Returns the maximum number of lines of text that the control
         keeps. This number includes the lines that are visible in the control.
         A value of ALL_LINES indicates that there is no limit. */
-    std::size_t MaxLinesOfHistory() const;
+    auto MaxLinesOfHistory() const noexcept { return m_max_lines_history; }
 
     /** Returns the positions of the scrollbars. */
     Pt ScrollPosition() const;
 
     void Render() override;
 
-    void SizeMove(const Pt& ul, const Pt& lr) override;
+    void SizeMove(Pt ul, Pt lr) override;
 
     void SelectAll() override;
     void DeselectAll() override;
@@ -97,35 +97,27 @@ public:
 
 protected:
     /** Returns true if >= 1 characters are selected. */
-    bool MultiSelected() const override;
+    bool MultiSelected() const noexcept override { return m_cursor_begin != m_cursor_end; }
 
     /** Returns the width of the scrollbar on the right side of the control (0
         if none). */
-    X RightMargin() const;
+    X RightMargin() const noexcept;
 
     /** Returns the width of the scrollbar at the bottom of the control (0 if
         none). */
-    Y BottomMargin() const;
+    Y BottomMargin() const noexcept;
 
-    /** Returns row and character index of \a pt, or (0, 0) if \a pt falls
-        outside the text.  \a pt is in client-space coordinates. */
-    std::pair<std::size_t, CPSize> CharAt(const Pt& pt) const;
+    /** Returns row and rendered character (glyph) index of \a pt,
+        or (0, 0) if \a pt falls outside the text.
+        \a pt is in client-space coordinates. */
+    std::pair<std::size_t, CPSize> GlyphAt(Pt pt) const;
 
-    /** Returns row and character index of char at \a idx, or (0, 0) if \a idx
-        falls outside the text, or if \a idx refers to a non-visible
-        character. */
-    std::pair<std::size_t, CPSize> CharAt(CPSize idx) const;
+    /** Returns row and rendered character (glyph) index of char at \a idx,
+        or (0, 0) if \a idx falls outside the text, or if \a idx refers to
+        a non-visible character. */
+    std::pair<std::size_t, CPSize> GlyphAt(CPSize idx) const;
 
-    /** Returns the code point index of the start of the UTF-8 sequence for
-        the code point at \a <i>char_idx</i> in row \a row, using \a line_data
-        instead of the current line data, if it is supplied.  If \a row, \a
-        char_idx refers to a character preceeded by formatting tags, the index
-        of the first character of the first formatting tag is returned instead.
-        Not range-checked. */
-    CPSize CharIndexOf(std::size_t row, CPSize char_idx,
-                       const std::vector<Font::LineData>* line_data = nullptr) const;
-
-    /** Returns the the x-coordinate of the beginning of row \a row, in
+    /** Returns the x-coordinate of the beginning of row \a row, in
         cleint-space coordinates.  Not range-checked. */
     X RowStartX(std::size_t row) const;
 
@@ -139,7 +131,7 @@ protected:
 
     /** Returns the index of the character in row \a row that falls under X
         coordinate \a x.  \a x must be in client-space coordinates. */
-    CPSize CharAt(std::size_t row, X x) const;
+    CPSize GlyphAt(std::size_t row, X x) const;
 
     /** Returns the index of the first visible row, or 0 if none. */
     std::size_t FirstVisibleRow() const;
@@ -167,10 +159,10 @@ protected:
     /** Returns the lesser of m_cursor_begin and m_cursor_end. */
     std::pair<std::size_t, CPSize> LowCursorPos() const;
 
-    void LButtonDown(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void LDrag(const Pt& pt, const Pt& move, Flags<ModKey> mod_keys) override;
-    void MouseWheel(const Pt& pt, int move, Flags<ModKey> mod_keys) override;
-    void KeyPress(Key key, std::uint32_t key_code_point, Flags<ModKey> mod_keys) override;
+    void LButtonDown(Pt pt, Flags<ModKey> mod_keys) override;
+    void LDrag(Pt pt, Pt move, Flags<ModKey> mod_keys) override;
+    void MouseWheel(Pt pt, int move, Flags<ModKey> mod_keys) override;
+    void KeyPress(Key key, uint32_t key_code_point, Flags<ModKey> mod_keys) override;
     void TextInput(const std::string& text) override;
 
     /** Recreates the vertical and horizontal scrolls as needed. */
@@ -197,14 +189,14 @@ private:
 
     Flags<MultiEditStyle> m_style;
 
-    std::pair<std::size_t, CPSize> m_cursor_begin; ///< The row and character index of the first character in the hilited selection
-    std::pair<std::size_t, CPSize> m_cursor_end;   ///< The row and character index + 1 of the last character in the hilited selection
+    std::pair<std::size_t, CPSize> m_cursor_begin; ///< The row and glyph index of the first character in the hilited selection
+    std::pair<std::size_t, CPSize> m_cursor_end;   ///< The row and glyph index + 1 of the last character in the hilited selection
     // if m_cursor_begin == m_cursor_end, the caret is draw at m_cursor_end
 
     Pt              m_contents_sz;          ///< The size of the entire text block in the control (not just the visible part)
 
-    X               m_first_col_shown{0};   ///< The position (counted from the left side of the text) of the first pixel shown
-    Y               m_first_row_shown{0};   ///< The position (counted from the top of the text) of the first pixel shown
+    X               m_first_col_shown_x_from_left_of_text{X0};  ///< The position (counted from the left side of the text) of the first pixel shown
+    Y               m_first_row_shown_y_from_top_of_text{Y0};   ///< The position (counted from the top of the text) of the first pixel shown
 
     std::size_t     m_max_lines_history;
 

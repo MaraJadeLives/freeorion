@@ -13,13 +13,12 @@
 #include "../util/i18n.h"
 
 
-#define CHECK_COND_VREF_MEMBER(m_ptr) { if (m_ptr == rhs.m_ptr) {           \
-                                            /* check next member */         \
-                                        } else if (!m_ptr || !rhs.m_ptr) {  \
-                                            return false;                   \
-                                        } else {                            \
-                                            if (*m_ptr != *(rhs.m_ptr))     \
-                                                return false;               \
+#define CHECK_COND_VREF_MEMBER(m_ptr) { if (m_ptr == rhs.m_ptr) {            \
+                                            /* check next member */          \
+                                        } else if (!m_ptr || !rhs.m_ptr) {   \
+                                            return false;                    \
+                                        } else if (*m_ptr != *(rhs.m_ptr)) { \
+                                            return false;                    \
                                         }   }
 
 std::vector<std::string_view> SpecialsManager::SpecialNames() const {
@@ -36,9 +35,9 @@ const Special* SpecialsManager::GetSpecial(std::string_view name) const {
     return &m_specials[offset];
 }
 
-unsigned int SpecialsManager::GetCheckSum() const {
+uint32_t SpecialsManager::GetCheckSum() const {
     CheckPendingSpecialsTypes();
-    unsigned int retval{0};
+    uint32_t retval{0};
     for (auto const& special : m_specials)
         CheckSums::CheckSumCombine(retval, special);
     CheckSums::CheckSumCombine(retval, m_specials.size());
@@ -97,18 +96,24 @@ Special::Special(std::string&& name, std::string&& description,
                  std::unique_ptr<ValueRef::ValueRef<double>>&& initial_capaicty,
                  std::unique_ptr<Condition::Condition>&& location,
                  const std::string& graphic) :
-    m_name(std::move(name)),
+    m_name(name), // not moving so usable below
     m_description(std::move(description)),
     m_stealth(std::move(stealth)),
+    m_effects([](auto& effects, const auto& name) {
+        std::vector<Effect::EffectsGroup> retval;
+        retval.reserve(effects.size());
+        for (auto& e : effects) {
+            e->SetTopLevelContent(name);
+            retval.push_back(std::move(*e));
+        }
+        return retval;
+    }(effects, name)),
     m_spawn_rate(spawn_rate),
     m_spawn_limit(spawn_limit),
     m_initial_capacity(std::move(initial_capaicty)),
     m_location(std::move(location)),
     m_graphic(graphic)
 {
-    for (auto&& effect : effects)
-        m_effects.push_back(std::move(effect));
-
     Init();
 }
 
@@ -129,25 +134,7 @@ bool Special::operator==(const Special& rhs) const {
     CHECK_COND_VREF_MEMBER(m_initial_capacity)
     CHECK_COND_VREF_MEMBER(m_location)
 
-    if (m_effects.size() != rhs.m_effects.size())
-        return false;
-    try {
-        for (std::size_t idx = 0; idx < m_effects.size(); ++idx) {
-            const auto& my_op = m_effects.at(idx);
-            const auto& rhs_op = rhs.m_effects.at(idx);
-
-            if (my_op == rhs_op)
-                continue;
-            if (!my_op || !rhs_op)
-                return false;
-            if (*my_op != *rhs_op)
-                return false;
-        }
-    } catch (...) {
-        return false;
-    }
-
-    return true;
+    return m_effects == rhs.m_effects;
 }
 
 std::string Special::Description() const {
@@ -156,11 +143,9 @@ std::string Special::Description() const {
     result << UserString(m_description) << "\n";
 
     for (auto& effect : m_effects) {
-        const std::string& description = effect->GetDescription();
-
-        if (!description.empty()) {
+        const auto& description = effect.GetDescription();
+        if (!description.empty())
             result << "\n" << UserString(description) << "\n";
-        }
     }
 
     return result.str();
@@ -169,16 +154,13 @@ std::string Special::Description() const {
 void Special::Init() {
     if (m_stealth)
         m_stealth->SetTopLevelContent(m_name);
-    for (auto& effect : m_effects) {
-        effect->SetTopLevelContent(m_name);
-    }
     if (m_initial_capacity)
         m_initial_capacity->SetTopLevelContent(m_name);
     if (m_location)
         m_location->SetTopLevelContent(m_name);
 }
 
-std::string Special::Dump(unsigned short ntabs) const {
+std::string Special::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "Special\n";
     retval += DumpIndent(ntabs+1) + "name = \"" + m_name + "\"\n";
     retval += DumpIndent(ntabs+1) + "description = \"" + m_description + "\"\n";
@@ -201,30 +183,31 @@ std::string Special::Dump(unsigned short ntabs) const {
 
     if (m_effects.size() == 1) {
         retval += DumpIndent(ntabs+1) + "effectsgroups =\n";
-        retval += m_effects[0]->Dump(ntabs+2);
+        retval += m_effects.front().Dump(ntabs+2);
     } else {
         retval += DumpIndent(ntabs+1) + "effectsgroups = [\n";
         for (auto& effect : m_effects)
-            retval += effect->Dump(ntabs+2);
+            retval += effect.Dump(ntabs+2);
         retval += DumpIndent(ntabs+1) + "]\n";
     }
     retval += DumpIndent(ntabs+1) + "graphic = \"" + m_graphic + "\"\n";
     return retval;
 }
 
-float Special::InitialCapacity(int object_id) const {
+float Special::InitialCapacity(int object_id, const ScriptingContext& context) const {
     if (!m_initial_capacity)
         return 0.0f;
 
-    auto obj = Objects().get(object_id);    // TODO: pass ScriptingContext and use here...
+    auto obj = context.ContextObjects().getRaw(object_id);
     if (!obj)
         return 0.0f;
 
-    return m_initial_capacity->Eval(ScriptingContext(std::move(obj)));
+    const ScriptingContext local_context{context, ScriptingContext::Source{}, obj};
+    return m_initial_capacity->Eval(local_context);
 }
 
-unsigned int Special::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t Special::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, m_name);
     CheckSums::CheckSumCombine(retval, m_description);

@@ -1,15 +1,39 @@
 import freeOrionAIInterface as fo
-from typing import Dict, Tuple
 
 import AIDependencies
 import PolicyAI
 from buildings import BuildingType, iterate_buildings_types
 from colonization.colony_score import debug_rating
-from freeorion_tools import get_named_real, get_species_stability
+from EnumsAI import FocusType
+from freeorion_tools import (
+    get_game_rule_int,
+    get_named_int,
+    get_named_real,
+    get_species_stability,
+)
 from freeorion_tools.caching import cache_for_current_turn
 from PlanetUtilsAI import dislike_factor
-from turn_state import get_colonized_planets, have_worldtree
+from turn_state import get_empire_planets_by_species, have_worldtree, luxury_resources
 from universe.system_network import within_n_jumps
+
+_size_modifier = {
+    fo.planetSize.tiny: get_game_rule_int("RULE_TINY_SIZE_STABILITY", 2),
+    fo.planetSize.small: get_game_rule_int("RULE_SMALL_SIZE_STABILITY", 1),
+    fo.planetSize.medium: get_game_rule_int("RULE_MEDIUM_SIZE_STABILITY", 0),
+    fo.planetSize.large: get_game_rule_int("RULE_LARGE_SIZE_STABILITY", -1),
+    fo.planetSize.huge: get_game_rule_int("RULE_HUGE_SIZE_STABILITY", -2),
+    fo.planetSize.gasGiant: get_game_rule_int("RULE_GAS_GIANT_SIZE_STABILITY", 0),
+    fo.planetSize.asteroids: 0,  # no rule for asteroids yet(?)
+}
+
+_environment_modifier = {
+    fo.planetEnvironment.good: get_game_rule_int("RULE_GOOD_ENVIRONMENT_STABILITY", 2),
+    fo.planetEnvironment.adequate: get_game_rule_int("RULE_ADEQUATE_ENVIRONMENT_STABILITY", 1),
+    fo.planetEnvironment.poor: get_game_rule_int("RULE_POOR_ENVIRONMENT_STABILITY", 0),
+    fo.planetEnvironment.hostile: get_game_rule_int("RULE_HOSTILE_ENVIRONMENT_STABILITY", -1),
+    # That is used by the script. It doesn't matter in practice, AI shouldn't try to settle uninhabitable planets.
+    fo.planetEnvironment.uninhabitable: get_game_rule_int("RULE_HOSTILE_ENVIRONMENT_STABILITY", -1),
+}
 
 
 def calculate_stability(planet: fo.planet, species: fo.species) -> float:
@@ -26,12 +50,13 @@ def calculate_stability(planet: fo.planet, species: fo.species) -> float:
     buildings = _evaluate_buildings(planet, species)
     xenophobia = _evaluate_xenophobia(planet, species)
     administration = _evaluate_administration(planet, species)
-    result = baseline + species_mod + home_bonus + policies + specials + buildings + xenophobia + administration
+    rules = _size_modifier[planet.size] + _environment_modifier[planet.environmentForSpecies(species.name)]
+    result = baseline + species_mod + home_bonus + policies + specials + buildings + xenophobia + administration + rules
     # missing: supply connection check, artisan bonus, anything else?
     debug_rating(
         f"stability of {species.name} on {planet} would be {result:.1f} (base={baseline:.1f}, "
         f"species={species_mod:.1f}, specials={specials:.1f}, home={home_bonus:.1f}, policies={policies:.1f}, "
-        f"buildings={buildings:.1f}, xeno={xenophobia:.1f}, admin={administration:.1f})"
+        f"buildings={buildings:.1f}, xeno={xenophobia:.1f}, admin={administration:.1f}), rules={rules}"
     )
     return result
 
@@ -45,6 +70,17 @@ def _evaluate_policies(species: fo.species) -> float:
     result -= sum(dislike_value for p in empire.adoptedPolicies if p in species.dislikes)
     if PolicyAI.bureaucracy in empire.adoptedPolicies:
         result += get_named_real("PLC_BUREAUCRACY_STABILITY_FLAT")
+    if PolicyAI.diversity in empire.adoptedPolicies:
+        current_species = get_empire_planets_by_species()
+        # The evaluated planet may add another species
+        num_species = len(current_species) + (1 if species not in current_species else 0)
+        diversity_value = num_species - get_named_int("PLC_DIVERSITY_THRESHOLD")
+        diversity_scaling = get_named_real("PLC_DIVERSITY_SCALING")
+        result += diversity_value * diversity_scaling
+    if PolicyAI.capital_markets in empire.adoptedPolicies:
+        for special, planets in luxury_resources().items():
+            if special in species.likes and any(planet.focus == FocusType.FOCUS_INFLUENCE for planet in planets):
+                result += get_named_real("CAPITAL_MARKETS_INFLUENCE_BONUS_SCALING")
     # TBD: add conformance, indoctrination, etc. when the AI learns to use them
     return result
 
@@ -74,12 +110,12 @@ def _evaluate_specials(planet: fo.planet, species: fo.species) -> float:
 
 
 @cache_for_current_turn
-def _count_building(planet: fo.planet) -> Dict[str, Tuple[int, int, int]]:
+def _count_building(planet: fo.planet) -> dict[str, tuple[int, int, int]]:
     """Returns Mapping from BuildingType to number of buildings on planet, in system and elsewhere."""
     universe = fo.getUniverse()
     system = universe.getSystem(planet.systemID)
     planet_pid = {planet.id}
-    system_pids = set(pid for pid in system.planetIDs if pid != planet.id)
+    system_pids = {pid for pid in system.planetIDs if pid != planet.id}
     # TODO: add all buildings to BuildingType, so we get them all here
     result = {}
     for building_type in iterate_buildings_types():
@@ -115,16 +151,18 @@ def _evaluate_buildings(planet: fo.planet, species: fo.species) -> float:
 def _evaluate_xenophobia(planet, species) -> float:
     if AIDependencies.Tags.XENOPHOBIC not in species.tags:
         return 0.0
-    colonies = get_colonized_planets()
-    relevant_systems = within_n_jumps(planet.systemID, 5) & set(colonies.keys())
-    result = 0.0
     universe = fo.getUniverse()
-    value = get_named_real("XENOPHOBIC_SELF_TARGET_HAPPINESS_COUNT")
+    max_jumps = get_named_int("XENOPHOBIC_MAX_JUMPS")
+    relevant_systems = within_n_jumps(planet.systemID, max_jumps)
+    penalty_perjump = get_named_real("XENOPHOBIC_TARGET_STABILITY_PERJUMP")
+    result = 0.0
     for sys_id in relevant_systems:
-        for pid in colonies[sys_id]:
+        system = universe.getSystem(sys_id)
+        for pid in system.planetIDs:
             planet_species = universe.getPlanet(pid).speciesName
+            # TODO Do not count owned, different species planets when Racial Purity is adopted. AI doesn't adopt Racial Purity yet.
             if planet_species not in ("SP_EXOBOT", species.name, ""):
-                result += value  # value is negative
+                result += penalty_perjump * (1 + max_jumps - universe.jumpDistance(planet.systemID, pid))
     return result
 
 
@@ -140,7 +178,9 @@ def _evaluate_administration(planet: fo.planet, species: fo.species) -> float:
         # disconnected gives namedReal("DISCONNECTED_FROM_CAPITAL_AND_REGIONAL_ADMIN_STABILITY_PENALTY")
         result += 5 - min(jumps_to_admin, 5)
     if palace.built_at():  # bonus is only given the capital actually contains the palace
-        capital = universe.getPlanet(fo.getEmpire().capitalID)
+        # When rebuilding a palace, the planet only becomes the capital the turn after the palace is finished.
+        # So we cannot use fo.getEmpire().capitalID here, but for the calculation we do consider it the capital.
+        capital = universe.getPlanet(list(palace.built_at())[0])
         if species.name == capital.speciesName:
             result += 5.0
     return result

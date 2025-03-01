@@ -1,5 +1,12 @@
-from common.base_prod import TECH_COST_MULTIPLIER
-from common.priorities import TARGET_POPULATION_AFTER_SCALING_PRIORITY
+from macros.base_prod import TECH_COST_MULTIPLIER
+from macros.priorities import TARGET_POPULATION_AFTER_SCALING_PRIORITY
+
+try:
+    from focs._effects import EffectsGroup, HasSpecies, OwnedBy, SetTargetPopulation, Source, Target, Value
+    from focs._tech import *
+except ModuleNotFoundError:
+    pass
+
 
 Tech(
     name="CON_ORBITAL_HAB",
@@ -9,10 +16,10 @@ Tech(
     researchcost=250 * TECH_COST_MULTIPLIER,
     researchturns=7,
     tags=["PEDIA_GROWTH_CATEGORY"],
-    prerequisites="PRO_MICROGRAV_MAN",
+    prerequisites=["PRO_MICROGRAV_MAN"],
     effectsgroups=[
         EffectsGroup(
-            scope=Species & OwnedBy(empire=Source.Owner),
+            scope=HasSpecies() & OwnedBy(empire=Source.Owner),
             priority=TARGET_POPULATION_AFTER_SCALING_PRIORITY,
             effects=SetTargetPopulation(value=Value + 1 * Target.HabitableSize, accountinglabel="ORBITAL_HAB_LABEL"),
         )

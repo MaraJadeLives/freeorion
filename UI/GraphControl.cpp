@@ -3,6 +3,7 @@
 #include "ClientUI.h"
 #include "CUIControls.h"
 #include "../util/i18n.h"
+#include "../util/ranges.h"
 
 #include <GG/ClrConstants.h>
 
@@ -19,7 +20,7 @@ GraphControl::GraphControl() :
     AutoSetRange();
 }
 
-void GraphControl::AddSeries(std::vector<std::pair<double, double>> data, const GG::Clr& clr) {
+void GraphControl::AddSeries(std::vector<std::pair<double, double>> data, GG::Clr clr) {
     if (!data.empty()) {
         m_data.emplace_back(std::move(data), clr);
         DoLayout();
@@ -75,70 +76,56 @@ void GraphControl::AutoSetRange() {
         return;
 
     // large default values that are expected to be overwritten by the first seen value
-    double x_min = 99999999.9;
-    double y_min = 99999999.9;
-    double x_max = -99999999.9;
-    double y_max = -99999999.9;
+    double x_min = std::numeric_limits<double>::infinity();
+    double y_min = std::numeric_limits<double>::infinity();
+    double x_max = -std::numeric_limits<double>::infinity();
+    double y_max = -std::numeric_limits<double>::infinity();
 
-    for (const std::pair<std::vector<std::pair<double, double>>, GG::Clr>& curve : m_data) {
-        for (const std::pair<double, double>& curve_pt : curve.first) {
-            if (curve_pt.first < x_min)
-                x_min = curve_pt.first;
-            if (curve_pt.first > x_max)
-                x_max = curve_pt.first;
-            if (curve_pt.second < y_min)
-                y_min = curve_pt.second;
-            if (curve_pt.second > y_max)
-                y_max = curve_pt.second;
+    for (const auto& curve : m_data | range_keys) { // wanted to do this with ranges join and minmax_element, but boost ranges doesn't have an implementation of that and not all target platforms support C++20 ranges yet
+        for (const auto& [x, y] : curve) {
+            x_min = std::min(x, x_min);
+            x_max = std::max(x, x_max);
+            y_min = std::min(y, y_min);
+            y_max = std::max(y, y_max);
         }
     }
 
     SetRange(x_min, x_max, y_min, y_max);
 }
 
-void GraphControl::ShowPoints(bool show/* = true*/) {
-    bool old_show_points = m_show_points;
-    m_show_points = show;
-    if (show != old_show_points)
+void GraphControl::ShowPoints(bool show) {
+    if (std::exchange(m_show_points, show) != show)
         DoLayout();
 }
 
-void GraphControl::ShowLines(bool show/* = true*/) {
-    bool old_show_lines = m_show_lines;
-    m_show_lines = show;
-    if (show != old_show_lines)
+void GraphControl::ShowLines(bool show) {
+    if (std::exchange(m_show_lines, show) != show)
         DoLayout();
 }
 
-void GraphControl::ShowScale(bool show/* = true*/) {
-    bool old_show_scale = m_show_scale;
-    m_show_scale = show;
-    if (show != old_show_scale)
+void GraphControl::ShowScale(bool show) {
+    if (std::exchange(m_show_scale, show) != show)
         DoLayout();
 }
 
-void GraphControl::UseLogScale(bool log/* = true*/) {
-    bool old_log_scale = m_log_scale;
-    m_log_scale = log;
-    if (log != old_log_scale)
+void GraphControl::UseLogScale(bool log) {
+    if (std::exchange(m_log_scale, log) != log)
         DoLayout();
 }
 
-void GraphControl::ScaleToZero(bool zero/* = true*/) {
-    bool old_zero = m_zero_in_range;
-    m_zero_in_range = zero;
-    if (zero != old_zero)
+void GraphControl::ScaleToZero(bool zero) {
+    if (std::exchange(m_zero_in_range, zero) != zero)
         DoLayout();
 }
 
-void GraphControl::SizeMove(const GG::Pt& ul, const GG::Pt& lr) {
-    GG::Pt old_sz = Size();
+void GraphControl::SizeMove(GG::Pt ul, GG::Pt lr) {
+    const auto old_sz = Size();
     GG::Control::SizeMove(ul, lr);
     if (Size() != old_sz)
         DoLayout();
 }
 
-void GraphControl::RClick(const GG::Pt& pt, GG::Flags<GG::ModKey> mod_keys) {
+void GraphControl::RClick(GG::Pt pt, GG::Flags<GG::ModKey> mod_keys) {
     auto popup = GG::Wnd::Create<CUIPopupMenu>(pt.x, pt.y);
 
     auto set_log_scale = [this]()
@@ -194,11 +181,11 @@ void GraphControl::Render() {
 
     if (m_show_scale && !m_y_scale_ticks.empty()) {
         glEnable(GL_TEXTURE_2D);
-        auto font = ClientUI::GetFont();
-        glColor(ClientUI::TextColor());
+        const auto font = ClientUI::GetFont();
+        GG::Font::RenderState rs{ClientUI::TextColor()};
         for (auto label : m_y_scale_ticks) {
-            auto roundedlabel = boost::format("%|1$.12|") % label.second;
-            font->RenderText({ul.x + GG::X1, lr.y + label.first}, roundedlabel.str());
+            const auto roundedlabel = boost::format("%|1$.12|") % label.second;
+            font->RenderText(GG::Pt{ul.x + GG::X1, lr.y + label.first}, roundedlabel.str(), rs);
         }
     }
 

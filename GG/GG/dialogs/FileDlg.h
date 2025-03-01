@@ -51,14 +51,15 @@ public:
         indicates whether multiple file selections are allowed.  \throw
         GG::FileDlg::BadInitialDirectory Throws when \a directory is
         invalid. */
-    FileDlg(const std::string& directory, const std::string& filename, bool save, bool multi, const std::shared_ptr<Font>& font,
+    FileDlg(const std::string& directory, const std::string& filename,
+            bool save, bool multi, const std::shared_ptr<Font>& font,
             Clr color, Clr border_color, Clr text_color = CLR_BLACK);
     void CompleteConstruction() override;
 
-    std::set<std::string> Result() const; ///< returns a set of strings that contains the files chosen by the user; there will be only one file if \a multi == false was passed to the ctor
+    auto Result() const { return m_result; } ///< set of strings that contains the files chosen by the user; there will be only one file if \a multi == false was passed to the ctor
 
     /** Returns true iff this FileDlg will select directories instead of files. */
-    bool SelectDirectories() const;
+    bool SelectDirectories() const noexcept { return m_select_directories; }
 
     /** Returns true iff this FileDlg will append the missing extension to a
         file when in save mode.  Note that action is only taken if there is a
@@ -66,10 +67,10 @@ public:
         position (i.e. it is of the form "*foo").  If precondition is
         satisfied, any filename the user selects that does not end in "foo"
         will have "foo" appended to it. */
-    bool AppendMissingSaveExtension() const;
+    bool AppendMissingSaveExtension() const noexcept { return m_append_missing_save_extension; }
 
     void Render() override;
-    void KeyPress(Key key, std::uint32_t key_code_point, Flags<ModKey> mod_keys) override;
+    void KeyPress(Key key, uint32_t key_code_point, Flags<ModKey> mod_keys) override;
 
     /** Set this to true if this FileDlg should select directories instead of
         files.  Note that this will only have an effect in file-open mode. */
@@ -98,7 +99,7 @@ public:
 
     /** Returns the current directory (the one that will be used by default on
         the next invocation of FileDlg::Run()) */
-    static const boost::filesystem::path& WorkingDirectory();
+    static const auto& WorkingDirectory() noexcept { return s_working_dir; }
 
     /** Converts a string to a path in a cross platform safe manner. */
     static const boost::filesystem::path StringToPath(const std::string& str);
@@ -111,13 +112,11 @@ public:
 
 private:
     void DoLayout();
-    void AttachSignalChildren();
-    void DetachSignalChildren();
     void OkClicked();
     void OkHandler(bool double_click);
     void CancelClicked();
     void FileSetChanged(const ListBox::SelectionSet& files);
-    void FileDoubleClicked(DropDownList::iterator it, const GG::Pt& pt, const GG::Flags<GG::ModKey>& modkeys);
+    void FileDoubleClicked(DropDownList::iterator it, GG::Pt pt, Flags<ModKey> modkeys);
     void FilesEditChanged(const std::string& str);
     void FilterChanged(DropDownList::iterator it);
     void SetWorkingDirectory(const boost::filesystem::path& p);
@@ -136,9 +135,9 @@ private:
                      m_file_filters;
     std::set<std::string>
                      m_result;
-    bool             m_select_directories = false;;
-    bool             m_append_missing_save_extension = false;;
-    bool             m_in_win32_drive_selection = false;;
+    bool             m_select_directories = false;
+    bool             m_append_missing_save_extension = false;
+    bool             m_in_win32_drive_selection = false;
 
     std::string      m_save_str;
     std::string      m_open_str;
@@ -151,6 +150,8 @@ private:
     std::shared_ptr<Button>          m_cancel_button;
     std::shared_ptr<TextControl>     m_files_label;
     std::shared_ptr<TextControl>     m_file_types_label;
+
+    std::array<boost::signals2::scoped_connection, 6> m_connections = {};
 
     std::string      m_init_directory; ///< directory passed to constructor
     std::string      m_init_filename; ///< filename passed to constructor

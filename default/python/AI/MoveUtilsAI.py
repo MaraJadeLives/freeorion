@@ -1,6 +1,6 @@
 import freeOrionAIInterface as fo
 from logging import debug, warning
-from typing import List, Optional
+from typing import Optional
 
 import AIstate
 import fleet_orders
@@ -15,7 +15,7 @@ from target import TargetFleet, TargetSystem
 from turn_state import get_system_supply
 
 
-def create_move_orders_to_system(fleet: TargetFleet, target: TargetSystem) -> List["fleet_orders.OrderMove"]:
+def create_move_orders_to_system(fleet: TargetFleet, target: TargetSystem) -> list["fleet_orders.OrderMove"]:
     """
     Create a list of move orders from the fleet's current system to the target system.
 
@@ -36,20 +36,20 @@ def create_move_orders_to_system(fleet: TargetFleet, target: TargetSystem) -> Li
     system_targets = can_travel_to_system(fleet.id, starting_system, target, ensure_return=ensure_return)
     result = [fleet_orders.OrderMove(fleet, system) for system in system_targets]
     if not result and starting_system.id != target.id:
-        warning("fleet %s can't travel to system %s" % (fleet.id, target))
+        warning(f"fleet {fleet.id} can't travel to system {target}")
     return result
 
 
 def can_travel_to_system(
     fleet_id: int, start: TargetSystem, target: TargetSystem, ensure_return: bool = False
-) -> List[TargetSystem]:
+) -> list[TargetSystem]:
     """
     Return list systems to be visited.
     """
     if start == target:
         return [TargetSystem(start.id)]
 
-    debug("Requesting path for fleet %s from %s to %s" % (fo.getUniverse().getFleet(fleet_id), start, target))
+    debug(f"Requesting path for fleet {fo.getUniverse().getFleet(fleet_id)} from {start} to {target}")
     target_distance_from_supply = -min(get_system_supply(target.id), 0)
 
     # low-aggression AIs may not travel far from supply
@@ -138,14 +138,12 @@ def get_best_drydock_system_id(start_system_id: int, fleet_id: int) -> Optional[
         SAFETY_MARGIN = 10
         if SAFETY_MARGIN * path_rating <= fleet_rating:
             debug(
-                "Drydock recommendation %s from %s for fleet %s with fleet rating %.1f and path rating %.1f."
-                % (dock_system, start_system, universe.getFleet(fleet_id), fleet_rating, path_rating)
+                f"Drydock recommendation {dock_system} from {start_system} for fleet {universe.getFleet(fleet_id)} with fleet rating {fleet_rating:.1f} and path rating {path_rating:.1f}."
             )
             return dock_system.id
 
     debug(
-        "No safe drydock recommendation from %s for fleet %s with fleet rating %.1f."
-        % (start_system, universe.getFleet(fleet_id), fleet_rating)
+        f"No safe drydock recommendation from {start_system} for fleet {universe.getFleet(fleet_id)} with fleet rating {fleet_rating:.1f}."
     )
     return None
 
@@ -184,5 +182,5 @@ def get_repair_fleet_order(fleet: TargetFleet) -> Optional["fleet_orders.OrderRe
     if drydock_sys_id is None:
         return None
 
-    debug("Ordering fleet %s to %s for repair" % (fleet, fo.getUniverse().getSystem(drydock_sys_id)))
+    debug(f"Ordering fleet {fleet} to {fo.getUniverse().getSystem(drydock_sys_id)} for repair")
     return fleet_orders.OrderRepair(fleet, TargetSystem(drydock_sys_id))

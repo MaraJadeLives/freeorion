@@ -3,44 +3,19 @@ default_stages:
   - manual
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.1.0
+    rev: v4.5.0
     hooks:
       - id: check-merge-conflict
       - id: check-yaml
-  - repo: https://github.com/timothycrosley/isort
-    rev: 5.10.1
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: 'v0.2.1'
     hooks:
-      - id: isort
+      - id: ruff
+        args: [ --fix, --exit-non-zero-on-fix ]
   - repo: https://github.com/psf/black
-    rev: 22.1.0
+    rev: 23.12.0
     hooks:
       - id: black
-  - repo: https://gitlab.com/pycqa/flake8/
-    rev: 4.0.1
-    # We have multiple places where Python code is located
-    # The main 3 points are:
-    # - AI (default/python)
-    # - Game rules (default/scripting)
-    # - Scripting tests (test-scripting)
-    # Each of them has own flake8 config
-    # Other files shares the same config as AI
-    # To addres this structure we run flake8 3 times with different set of excludes
-    hooks:
-      - id: flake8
-        name: flake8 for AI
-        args:
-          - --extend-exclude=default/scripting/*,test-scripting/*
-          - --config=default/python/tox.ini
-      - id: flake8
-        name: flake8 for scripting
-        args:
-          - --extend-exclude=default/python/*,test-scripting/*,cmake/*,doc/*,check/*
-          - --config=default/scripting/tox.ini
-      - id: flake8
-        name: flake8 for test-scripting
-        args:
-          - --extend-exclude=default/python/*,default/scripting/*,cmake/*,doc/*,check/*
-          - --config=test-scripting/tox.ini
   - repo: local
     hooks:
       - id: string-tables-syntax-check
@@ -50,3 +25,16 @@ repos:
         language: python
         files: 'default/stringtables/[a-z]{2}\.txt'
         types: [ text ]
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 'v1.8.0'
+    hooks:
+      - id: mypy
+        name: focs.py type checks with mypy
+        files: "(default/scripting/.*.py)|(check/check_file_changed/.*.py)"
+        exclude: "^default/scripting/focs/.*.py"
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.350
+    hooks:
+      - id: pyright
+        name: focs.py type checks with pyright
+        files: "(default/scripting/.*.py)|(check/check_file_changed/.*.py)"

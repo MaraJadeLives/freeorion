@@ -25,7 +25,7 @@
 #include "../util/Random.h"
 #include "../util/SitRepEntry.h"
 #include "../util/i18n.h"
-
+#include "../util/ranges.h"
 
 namespace {
     DeclareThreadSafeLogger(effects);
@@ -44,12 +44,18 @@ using boost::io::str;
 
 
 namespace {
+    CONSTEXPR_VEC_AND_STRING const std::string EMPTY_STRING;
+    CONSTEXPR_VEC_AND_STRING const ScriptingContext::CurrentValueVariant
+        EMPTY_STRING_CURRENT_VALUE{EMPTY_STRING};
+    CONSTEXPR_VEC_AND_STRING const ScriptingContext::CurrentValueVariant&
+        ZERO_INT_CURRENT_VALUE{ScriptingContext::DEFAULT_CURRENT_VALUE};
+
     /** creates a new fleet at a specified \a x and \a y location within the
      * Universe, and and inserts \a ship into it.  Used when a ship has been
      * moved by the MoveTo effect separately from the fleet that previously
      * held it.  All ships need to be within fleets. */
     std::shared_ptr<Fleet> CreateNewFleet(
-        double x, double y, std::shared_ptr<Ship> ship, ScriptingContext& context,
+        double x, double y, Ship* ship, ScriptingContext& context,
         FleetAggression aggression = FleetAggression::INVALID_FLEET_AGGRESSION)
     {
         if (!ship)
@@ -78,30 +84,29 @@ namespace {
      * fleet that previously held it.  Also used by CreateShip effect to give
      * the new ship a fleet.  All ships need to be within fleets. */
     std::shared_ptr<Fleet> CreateNewFleet(
-        std::shared_ptr<System> system, std::shared_ptr<Ship> ship, ScriptingContext& context,
+        System* system, Ship* ship, ScriptingContext& context,
         FleetAggression aggression = FleetAggression::INVALID_FLEET_AGGRESSION)
     {
         if (!system || !ship)
             return nullptr;
-        Universe& universe = context.ContextUniverse();
 
         // remove ship from old fleet / system, put into new system if necessary
         if (ship->SystemID() != system->ID()) {
-            if (auto old_system = universe.Objects().get<System>(ship->SystemID())) {
+            if (auto old_system = context.ContextObjects().getRaw<System>(ship->SystemID())) {
                 old_system->Remove(ship->ID());
                 ship->SetSystem(INVALID_OBJECT_ID);
             }
-            system->Insert(ship);
+            system->Insert(ship, System::NO_ORBIT, context.current_turn, context.ContextObjects());
         }
 
         if (ship->FleetID() != INVALID_OBJECT_ID) {
-            if (auto old_fleet = universe.Objects().get<Fleet>(ship->FleetID()))
+            if (auto old_fleet = context.ContextObjects().getRaw<Fleet>(ship->FleetID()))
                 old_fleet->RemoveShips({ship->ID()});
         }
 
         // create new fleet for ship, and put it in new system
         auto fleet = CreateNewFleet(system->X(), system->Y(), std::move(ship), context, aggression);
-        system->Insert(fleet);
+        system->Insert(fleet, System::NO_ORBIT, context.current_turn, context.ContextObjects());
 
         return fleet;
     }
@@ -111,12 +116,10 @@ namespace {
       * with the MoveTo effect, as otherwise the system wouldn't get explored,
       * and objects being moved into unexplored systems might disappear for
       * players or confuse the AI. */
-    void ExploreSystem(int system_id, const std::shared_ptr<const UniverseObject>& target_object,
-                       ScriptingContext& context)
-    {
-        if (!target_object || target_object->Unowned())
+    void ExploreSystem(int system_id, int empire_id, ScriptingContext& context) {
+        if (empire_id == ALL_EMPIRES || system_id == INVALID_OBJECT_ID)
             return;
-        if (auto empire = context.GetEmpire(target_object->Owner()))
+        if (auto empire = context.GetEmpire(empire_id))
             empire->AddExploredSystem(system_id, context.current_turn, context.ContextObjects());
     }
 
@@ -124,7 +127,7 @@ namespace {
      * resets the fleet's move route.  Used after a fleet has been moved with
      * the MoveTo effect, as its previous route was assigned based on its
      * previous location, and may not be valid for its new location. */
-    void UpdateFleetRoute(const std::shared_ptr<Fleet>& fleet, int new_next_system,
+    void UpdateFleetRoute(Fleet* fleet, int new_next_system,
                           int new_previous_system, const ScriptingContext& context)
     {
         if (!fleet) {
@@ -134,13 +137,13 @@ namespace {
 
         const ObjectMap& objects = context.ContextObjects();
 
-        auto next_system = objects.get<System>(new_next_system);
+        const auto next_system = objects.getRaw<System>(new_next_system);
         if (!next_system) {
             ErrorLogger(effects) << "UpdateFleetRoute couldn't get new next system with id: " << new_next_system;
             return;
         }
 
-        if (new_previous_system != INVALID_OBJECT_ID && !objects.get<System>(new_previous_system))
+        if (new_previous_system != INVALID_OBJECT_ID && !objects.getRaw<System>(new_previous_system))
             ErrorLogger(effects) << "UpdateFleetRoute couldn't get new previous system with id: " << new_previous_system;
 
         fleet->SetNextAndPreviousSystems(new_next_system, new_previous_system);
@@ -151,20 +154,20 @@ namespace {
         if (start_system == INVALID_OBJECT_ID)
             start_system = new_next_system;
 
-        int dest_system = fleet->FinalDestinationID();
+        const int dest_system = fleet->FinalDestinationID();
 
-        auto route_pair = context.ContextUniverse().GetPathfinder()->ShortestPath(
-            start_system, dest_system, fleet->Owner(), objects);
+        auto route = context.ContextUniverse().GetPathfinder().ShortestPath(
+            start_system, dest_system, fleet->Owner(), objects).first;
 
         // if shortest path is empty, the route may be impossible or trivial, so just set route to move fleet
         // to the next system that it was just set to move to anyway.
-        if (route_pair.first.empty())
-            route_pair.first.push_back(new_next_system);
+        if (route.empty())
+            route.push_back(new_next_system);
 
 
         // set fleet with newly recalculated route
         try {
-            fleet->SetRoute(route_pair.first, objects);
+            fleet->SetRoute(std::move(route), objects);
         } catch (const std::exception& e) {
             ErrorLogger(effects) << "Caught exception updating fleet route in effect code: " << e.what();
         }
@@ -177,7 +180,7 @@ namespace {
         for (const std::string& star_name : star_names) {
             // does an existing system have this name?
             bool dupe = false;
-            for (auto& system : objects.all<System>()) {
+            for (auto* system : objects.allRaw<System>()) {
                 if (system->Name() == star_name) {
                     dupe = true;
                     break;  // another systme has this name. skip to next potential name.
@@ -209,7 +212,19 @@ EffectsGroup::EffectsGroup(std::unique_ptr<Condition::Condition>&& scope,
     m_accounting_label(std::move(accounting_label)),
     m_priority(priority),
     m_description(std::move(description)),
-    m_content_name(std::move(content_name))
+    m_content_name(std::move(content_name)),
+    m_has_meter_effects([this]() {
+        return std::any_of(m_effects.begin(), m_effects.end(),
+                           [](const auto& e) noexcept { return e->IsMeterEffect(); });
+    }()),
+    m_has_appearance_effects([this]() {
+        return std::any_of(m_effects.begin(), m_effects.end(),
+                           [](const auto& e) noexcept { return e->IsAppearanceEffect(); });
+    }()),
+    m_has_sitrep_effects([this]() {
+        return std::any_of(m_effects.begin(), m_effects.end(),
+                           [](const auto& e) noexcept { return e->IsSitrepEffect(); });
+    }())
 {}
 
 EffectsGroup::~EffectsGroup() = default;
@@ -253,9 +268,7 @@ bool EffectsGroup::operator==(const EffectsGroup& rhs) const {
 
             if (my_op == rhs_op)
                 continue;
-            if (!my_op || !rhs_op)
-                return false;
-            if (*my_op != *rhs_op)
+            if (!my_op || !rhs_op || *my_op != *rhs_op)
                 return false;
         }
     } catch (...) {
@@ -291,22 +304,13 @@ void EffectsGroup::Execute(ScriptingContext& context,
     }
 }
 
-const std::vector<Effect*> EffectsGroup::EffectsList() const {
-    std::vector<Effect*> retval;
-    retval.reserve(m_effects.size());
-    std::transform(m_effects.begin(), m_effects.end(), std::back_inserter(retval),
-                   [](const std::unique_ptr<Effect>& xx) {return xx.get();});
-    return retval;
-}
-
-const std::string& EffectsGroup::GetDescription() const
-{ return m_description; }
-
-std::string EffectsGroup::Dump(unsigned short ntabs) const {
+std::string EffectsGroup::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "EffectsGroup";
     if (!m_content_name.empty())
         retval += " // from " + m_content_name;
     retval += "\n";
+    if (!m_description.empty())
+        retval += DumpIndent(ntabs+1) + "description = \"" + m_description + "\"\n";
     retval += DumpIndent(ntabs+1) + "scope =\n";
     retval += m_scope->Dump(ntabs+2);
     if (m_activation) {
@@ -331,42 +335,18 @@ std::string EffectsGroup::Dump(unsigned short ntabs) const {
     return retval;
 }
 
-bool EffectsGroup::HasMeterEffects() const {
-    for (auto& effect : m_effects) {
-        if (effect->IsMeterEffect())
-            return true;
-    }
-    return false;
-}
-
-bool EffectsGroup::HasAppearanceEffects() const {
-    for (auto& effect : m_effects) {
-        if (effect->IsAppearanceEffect())
-            return true;
-    }
-    return false;
-}
-
-bool EffectsGroup::HasSitrepEffects() const {
-    for (auto& effect : m_effects) {
-        if (effect->IsSitrepEffect())
-            return true;
-    }
-    return false;
-}
-
-void EffectsGroup::SetTopLevelContent(const std::string& content_name) {
-    m_content_name = content_name;
+void EffectsGroup::SetTopLevelContent(std::string content_name) {
     if (m_scope)
         m_scope->SetTopLevelContent(content_name);
     if (m_activation)
         m_activation->SetTopLevelContent(content_name);
     for (auto& effect : m_effects)
         effect->SetTopLevelContent(content_name);
+    m_content_name = std::move(content_name);
 }
 
-unsigned int EffectsGroup::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t EffectsGroup::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "EffectsGroup");
     CheckSums::CheckSumCombine(retval, m_scope);
@@ -385,14 +365,15 @@ unsigned int EffectsGroup::GetCheckSum() const {
 ///////////////////////////////////////////////////////////
 // Dump function                                         //
 ///////////////////////////////////////////////////////////
-std::string Dump(const std::vector<std::shared_ptr<EffectsGroup>>& effects_groups) {
+std::string Dump(const std::vector<EffectsGroup>& effects_groups) {
     std::stringstream retval;
 
     for (auto& effects_group : effects_groups)
-        retval << "\n" << effects_group->Dump();
+        retval << "\n" << effects_group.Dump();
 
     return retval.str();
 }
+
 
 
 ///////////////////////////////////////////////////////////
@@ -433,14 +414,14 @@ void Effect::Execute(ScriptingContext& context, const TargetSet& targets) const 
 
     // execute effects on targets
     ScriptingContext local_context{context};
-    for (const auto& target : targets) {
+    for (auto* target : targets) {
         local_context.effect_target = target;
         Execute(local_context);
     }
 }
 
-unsigned int Effect::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t Effect::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "Effect");
 
@@ -455,11 +436,11 @@ unsigned int Effect::GetCheckSum() const {
 void NoOp::Execute(ScriptingContext& context) const
 { DebugLogger(effects) << "Effect::NoOp::Execute: src: " << context.source << "  tgt: " << context.effect_target; }
 
-std::string NoOp::Dump(unsigned short ntabs) const
+std::string NoOp::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "NoOp\n"; }
 
-unsigned int NoOp::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t NoOp::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "NoOp");
 
@@ -505,73 +486,27 @@ namespace {
     std::string TargetsDump(const TargetSet& targets) {
         std::string retval;
         retval.reserve(1500*targets.size()); // rough guesstimate
-        for (auto& target : targets)
+        for (auto* target : targets)
             retval.append("\n").append(target->Dump());
         return retval;
     }
 
-    template <typename C, typename T, typename V, typename M>
-    std::pair<double, Meter*> NewMeterValue(C&& context, M meter, const V& value_ref, T&& target)
-    {
-        static_assert(!std::is_pointer_v<T>); // shared_ptr OK, raw pointer not, as it needs to be assignable to a shared_ptr
-        static_assert(std::is_same_v<std::decay_t<C>, ScriptingContext>);
-        static_assert(!std::is_const_v<C>);
-        static_assert(!std::is_const_v<M>);
-        static_assert(std::is_same_v<std::decay_t<M>, MeterType> ||
-                      std::is_same_v<std::decay_t<M>, Meter*>);
-
-        Meter* m = nullptr;
-        if constexpr (std::is_same_v<M, MeterType>)
-            m = target ? target->GetMeter(meter) : nullptr;
-        else if constexpr (std::is_same_v<M, Meter*>)
-            m = meter;
-        if (!m)
-            return {Meter::INVALID_VALUE, m};
-
-        if (value_ref->TargetInvariant())
-            return {value_ref->Eval(context), m};
-        if (!target)
-            return {Meter::INVALID_VALUE, m};
-
-        ScriptingContext::CurrentValueVariant cvv{m->Current()};
-        ScriptingContext target_meter_context{std::forward<C>(context), std::forward<T>(target), cvv};
-        return {value_ref->Eval(target_meter_context), m};
-    }
-
-    template <typename C, typename V, typename M>
-    std::pair<double, Meter*> NewMeterValue(C&& context, M meter, const V& value_ref)
-    {
-        static_assert(std::is_same_v<std::decay_t<C>, ScriptingContext>);
-        static_assert(!std::is_const_v<C>);
-        static_assert(!std::is_const_v<M>);
-        static_assert(std::is_same_v<std::decay_t<M>, MeterType> ||
-                      std::is_same_v<std::decay_t<M>, Meter*>);
-
-        const auto& target = context.effect_target;
-        Meter* m = nullptr;
-        if constexpr (std::is_same_v<M, MeterType>)
-            m = target ? target->GetMeter(meter) : nullptr;
-        else if constexpr (std::is_same_v<M, Meter*>)
-            m = meter;
-        if (!m)
-            return {Meter::INVALID_VALUE, m};
-
-        if (value_ref->TargetInvariant())
-            return {value_ref->Eval(context), m};
-        if (!target)
-            return {Meter::INVALID_VALUE, m};
-
-        ScriptingContext::CurrentValueVariant meter_cvv{m->Current()};
-        ScriptingContext target_meter_context{std::forward<C>(context), meter_cvv};
-        return {value_ref->Eval(target_meter_context), m};
-    }
+    constexpr double OperateData(::ValueRef::OpType op_type, double lhs, double rhs)
+    { return ::ValueRef::OperateData(op_type, lhs, rhs, ::ValueRef::vr_rand_int, ::ValueRef::vr_rand_double); }
 }
 
 void SetMeter::Execute(ScriptingContext& context) const {
-    if (!context.effect_target) return;
-
-    if (Meter* m = context.effect_target->GetMeter(m_meter))
-        m->SetCurrent(NewMeterValue(context, m, m_value).first);
+    if (!context.effect_target || !m_value)
+        return;
+    if (Meter* meter = context.effect_target->GetMeter(m_meter)) {
+        if (m_value->TargetInvariant()) {
+            meter->SetCurrent(static_cast<float>(m_value->Eval(context)));
+        } else {
+            const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+            const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, context.effect_target, cvv);
+            meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
+        }
+    }
 }
 
 void SetMeter::Execute(ScriptingContext& context,
@@ -588,8 +523,11 @@ void SetMeter::Execute(ScriptingContext& context,
     if (targets.empty())
         return;
 
-    TraceLogger(effects) << "\n\nExecute SetMeter effect: \n" << Dump();
-    TraceLogger(effects) << "SetMeter execute " << targets.size() << " before:" << TargetsDump(targets);
+    const bool trace_log = LoggerThresholdEnabled(LogLevel::trace, "effects");
+    if (trace_log) {
+        TraceLogger(effects) << "\n\nExecute SetMeter effect: \n" << Dump();
+        TraceLogger(effects) << "SetMeter execute " << targets.size() << " before:" << TargetsDump(targets);\
+    }
 
     const int source_id{context.source ? context.source->ID() : INVALID_OBJECT_ID};
     const auto& accounting_label{m_accounting_label.empty() ? effect_cause.custom_label : m_accounting_label};
@@ -599,7 +537,7 @@ void SetMeter::Execute(ScriptingContext& context,
     auto update_meter =
         [source_id, &accounting_label, &effect_cause, meter_type{m_meter},
          have_accounting{accounting_map != nullptr}, &accounting]
-        (double new_meter_value, int target_id, Meter* meter) -> void
+        (float new_meter_value, int target_id, Meter* meter) -> void
     {
         auto old_value = meter->Current();
         meter->SetCurrent(new_meter_value);
@@ -614,60 +552,75 @@ void SetMeter::Execute(ScriptingContext& context,
     };
 
 
-    if (targets.size() == 1) {
-        auto& target = targets.front();
-        if (Meter* meter = target->GetMeter(m_meter)) {
-            auto new_val = NewMeterValue(context, meter, m_value, target).first;
-            update_meter(new_val, target->ID(), meter);
-        }
-
-    } else if (m_value->TargetInvariant()) {
+    if (m_value->TargetInvariant()) {
         // meter value does not depend on target, so handle with single ValueRef evaluation
-        auto new_val = m_value->Eval(context);
-        for (auto& target : targets) {
-            if (Meter* meter = target->GetMeter(m_meter))
-                update_meter(new_val, target->ID(), meter);
+        const auto new_val = static_cast<float>(m_value->Eval(context));
+        for (auto* target : targets) {
+            if (target) {
+                if (Meter* meter = target->GetMeter(m_meter))
+                    update_meter(new_val, target->ID(), meter);
+            }
         }
 
     } else if (m_value->SimpleIncrement()) {
-        auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
-        auto op_type = op_ref->GetOpType();
-        auto rhs = op_ref->RHS()->Eval(context);
-        [[maybe_unused]] auto lhs_ref = op_ref->LHS();
-        assert(lhs_ref && lhs_ref->GetReferenceType() == ValueRef::ReferenceType::EFFECT_TARGET_VALUE_REFERENCE);
+        const auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
+        const auto op_type = op_ref->GetOpType();
+        const auto rhs = op_ref->RHS()->Eval(context);
+        assert(op_ref->LHS() && op_ref->LHS()->IsEffectModifiedValueReference());
 
-        for (auto& target : targets) {
+        for (auto* target : targets) {
+            if (target) {
+                if (Meter* meter = target->GetMeter(m_meter)) {
+                    auto lhs = static_cast<double>(meter->Current());
+                    auto new_val = static_cast<float>(OperateData(op_type, lhs, rhs));
+                    update_meter(new_val, target->ID(), meter);
+                }
+            }
+        }
+
+    } else if (targets.size() == 1) {
+        if (auto* target = targets.front()) {
             if (Meter* meter = target->GetMeter(m_meter)) {
-                auto lhs = meter->Current();
-                auto new_val = ValueRef::Operation<double>::EvalImpl(op_type, lhs, rhs);
+                const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+                const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, target, cvv);
+                auto new_val = static_cast<float>(m_value->Eval(target_meter_context));
                 update_meter(new_val, target->ID(), meter);
             }
         }
 
     } else {
         // calculate new meter values before modifying anything...
-        std::vector<std::tuple<double, int, Meter*>> target_new_meter_vals;
+        std::vector<std::tuple<decltype(Meter().Current()), int, Meter*>> target_new_meter_vals;
         target_new_meter_vals.reserve(targets.size());
-        for (auto& target : targets) {
-            if (Meter* meter = target->GetMeter(m_meter))
-                target_new_meter_vals.emplace_back(
-                    NewMeterValue(context, meter, m_value, target).first, target->ID(), meter);
+        for (auto* target : targets) {
+            if (!target)
+                continue;
+            if (Meter* meter = target->GetMeter(m_meter)) {
+                const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+                const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, target, cvv);
+                target_new_meter_vals.emplace_back(m_value->Eval(target_meter_context), target->ID(), meter);
+            }
         }
 
         // set new meter values and update accounting
-        for (auto [new_val, target_id, meter] : target_new_meter_vals)
+        for (const auto& [new_val, target_id, meter] : target_new_meter_vals)
             update_meter(new_val, target_id, meter);
     }
 
-    TraceLogger(effects) << "SetMeter execute " << targets.size() << " after:" << TargetsDump(targets);
+    if (trace_log)
+        TraceLogger(effects) << "SetMeter execute " << targets.size() << " after:" << TargetsDump(targets);
 }
 
 void SetMeter::Execute(ScriptingContext& context, const TargetSet& targets) const {
+#if defined(__cpp_lib_constexpr_string) && ((!defined(__GNUC__) || (__GNUC__ > 12) || (__GNUC__ == 12 && __GNUC_MINOR__ >= 2))) && ((!defined(_MSC_VER) || (_MSC_VER >= 1934))) && ((!defined(__clang_major__) || (__clang_major__ >= 17)))
+    static constexpr const EffectCause default_effect_cause;
+#else
     static const EffectCause default_effect_cause;
+#endif
     Execute(context, targets, nullptr, default_effect_cause);
 }
 
-std::string SetMeter::Dump(unsigned short ntabs) const {
+std::string SetMeter::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "Set";
     switch (m_meter) {
     case MeterType::METER_TARGET_POPULATION:   retval += "TargetPopulation"; break;
@@ -721,8 +674,8 @@ void SetMeter::SetTopLevelContent(const std::string& content_name) {
         m_value->SetTopLevelContent(content_name);
 }
 
-unsigned int SetMeter::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetMeter::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetMeter");
     CheckSums::CheckSumCombine(retval, m_meter);
@@ -733,11 +686,8 @@ unsigned int SetMeter::GetCheckSum() const {
     return retval;
 }
 
-std::unique_ptr<Effect> SetMeter::Clone() const {
-    return std::make_unique<SetMeter>(m_meter,
-                                      ValueRef::CloneUnique(m_value),
-                                      m_accounting_label);
-}
+std::unique_ptr<Effect> SetMeter::Clone() const
+{ return std::make_unique<SetMeter>(m_meter, ValueRef::CloneUnique(m_value), m_accounting_label); }
 
 
 ///////////////////////////////////////////////////////////
@@ -781,11 +731,22 @@ void SetShipPartMeter::Execute(ScriptingContext& context) const {
         //context.effect_target->Dump();
         return;
     }
-    auto ship = std::static_pointer_cast<Ship>(context.effect_target);
 
-    // get meter, evaluate new value, assign
-    if (Meter* m = ship->GetPartMeter(m_meter, m_part_name->Eval(context)))
-        m->SetCurrent(NewMeterValue(context, m, m_value).first);
+    const auto part_name = m_part_name->TargetInvariant() ?
+        m_part_name->Eval(context) :
+        m_part_name->Eval(ScriptingContext{context, ScriptingContext::Target{}, context.effect_target, EMPTY_STRING_CURRENT_VALUE});
+
+    Meter* meter = static_cast<Ship*>(context.effect_target)->GetPartMeter(m_meter, part_name);
+    if (!meter)
+        return;
+
+    if (m_value->TargetInvariant()) {
+        meter->SetCurrent(static_cast<float>(m_value->Eval(context)));
+    } else {
+        const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+        const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, context.effect_target, cvv);
+        meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
+    }
 }
 
 void SetShipPartMeter::Execute(ScriptingContext& context,
@@ -800,16 +761,20 @@ void SetShipPartMeter::Execute(ScriptingContext& context,
     if (only_appearance_effects || only_generate_sitrep_effects)
         return;
 
+    auto dump_targets = [&targets]() {
+        std::string retval;
+        retval.reserve(targets.size() * 2000); // guesstimate
+        for (auto* target : targets)
+            retval.append("\n ... ").append(target->Dump(1));
+        return retval;
+    };
+
     TraceLogger(effects) << "\n\nExecute SetShipPartMeter effect: \n" << Dump();
-    TraceLogger(effects) << "SetShipPartMeter execute targets before: ";
-    for (auto& target : targets)
-        TraceLogger(effects) << " ... " << target->Dump(1);
+    TraceLogger(effects) << "SetShipPartMeter execute targets before: " << dump_targets();
 
     Execute(context, targets);
 
-    TraceLogger(effects) << "SetShipPartMeter execute targets after: ";
-    for (auto& target : targets)
-        TraceLogger(effects) << " ... " << target->Dump(1);
+    TraceLogger(effects) << "SetShipPartMeter execute targets after: " << dump_targets();
 }
 
 void SetShipPartMeter::Execute(ScriptingContext& context, const TargetSet& targets) const {
@@ -822,150 +787,132 @@ void SetShipPartMeter::Execute(ScriptingContext& context, const TargetSet& targe
 
 
     if (!m_part_name->TargetInvariant()) {
-        if (targets.size() == 1) {
-            auto& target = targets.front();
-            if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
-                return;
-            auto ship = static_cast<Ship*>(target.get());
+        // part name can be different for each target object, so need to re-evaluate for each
 
-            ScriptingContext target_context{context, target};
-            auto part_name = m_part_name->Eval(target_context);
+        if (m_value->TargetInvariant()) {
+            // new meter value does not depend on target or value modified by this effect,
+            // so do a single ValueRef evaluation
+            const float new_val = static_cast<float>(m_value->Eval(context));
 
-            if (Meter* meter = ship->GetPartMeter(m_meter, part_name)) {
-                auto new_val = NewMeterValue(std::move(target_context), meter, m_value).first;
-                meter->SetCurrent(new_val);
-            }
-
-        } else if (m_value->TargetInvariant()) {
-            // meter value does not depend on target, so handle with single ValueRef evaluation
-            auto new_val = m_value->Eval(context);
-            for (auto& target : targets) {
-                if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+            for (auto* target : targets) {
+                if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
                     continue;
-                auto ship = static_cast<Ship*>(target.get());
-
-                ScriptingContext target_context{context, target};
-                auto part_name = m_part_name->Eval(target_context);
-
-                if (Meter* meter = ship->GetPartMeter(m_meter, part_name))
+                const auto part_name = m_part_name->Eval(ScriptingContext{context, ScriptingContext::Target{}, target, EMPTY_STRING_CURRENT_VALUE});
+                if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name))
                     meter->SetCurrent(new_val);
             }
 
         } else if (m_value->SimpleIncrement()) {
-            auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
-            auto op_type = op_ref->GetOpType();
-            auto rhs = op_ref->RHS()->Eval(context);
-            [[maybe_unused]] auto lhs_ref = op_ref->LHS();
-            assert(lhs_ref && lhs_ref->GetReferenceType() == ValueRef::ReferenceType::EFFECT_TARGET_VALUE_REFERENCE);
+            // new meter value is like "Value + Increment", where + may be any operation and
+            // Increment is a single target-invariant value (effectively constant for this Execute call)
+            const auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
+            const auto op_type = op_ref->GetOpType();
+            const auto rhs = op_ref->RHS()->Eval(context);
+            assert(op_ref->LHS() && op_ref->LHS()->IsEffectModifiedValueReference());
 
-            for (auto& target : targets) {
-                if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+            for (auto* target : targets) {
+                if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
                     continue;
-                auto ship = static_cast<Ship*>(target.get());
-
-                ScriptingContext target_context{context, target};
-                auto part_name = m_part_name->Eval(target_context);
-
-                if (Meter* meter = ship->GetPartMeter(m_meter, part_name)) {
-                    auto lhs = meter->Current();
-                    auto new_val = ValueRef::Operation<double>::EvalImpl(op_type, lhs, rhs);
-                    meter->SetCurrent(new_val);
+                const auto part_name = m_part_name->Eval(ScriptingContext{context, ScriptingContext::Target{}, target, EMPTY_STRING_CURRENT_VALUE});
+                if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name)) {
+                    auto new_val = OperateData(op_type, static_cast<double>(meter->Current()), rhs);
+                    meter->SetCurrent(static_cast<float>(new_val));
                 }
+            }
+
+        } else if (targets.size() == 1) {
+            auto* target = targets.front();
+            if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+                return;
+            const auto part_name = m_part_name->Eval(ScriptingContext{context, ScriptingContext::Target{}, target, EMPTY_STRING_CURRENT_VALUE});
+            if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name)) {
+                const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+                const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, target, cvv);
+                meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
+            }
+
+        } else {
+            // each new meter value could be anything, including depending on other meter values
+            // that are being modified in this effect. So,  calculate new meter values before modifying anything
+            std::vector<std::pair<float, Meter*>> target_new_meter_vals;
+            target_new_meter_vals.reserve(targets.size());
+
+            for (auto* target : targets) {
+                if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+                    continue;
+                const ScriptingContext target_context{context, ScriptingContext::Target{}, target, EMPTY_STRING_CURRENT_VALUE};
+                const auto part_name = m_part_name->Eval(target_context);
+                if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name)) {
+                    const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+                    const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, target, cvv);
+                    target_new_meter_vals.emplace_back(static_cast<float>(m_value->Eval(target_meter_context)), meter);
+                }
+            }
+
+            // set new meter values and update accounting
+            for (auto& [new_val, meter] : target_new_meter_vals)
+                meter->SetCurrent(new_val);
+        }
+
+    } else {
+        // part name doesn't depend on target, so handle with single ValueRef evaluation
+        const auto part_name = m_part_name->Eval(context);
+
+        if (m_value->TargetInvariant()) {
+            // meter value does not depend on target, so handle with single ValueRef evaluation
+            auto new_val = m_value->Eval(context);
+            for (auto* target : targets) {
+                if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+                    continue;
+                if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name))
+                    meter->SetCurrent(new_val);
+            }
+
+        } else if (m_value->SimpleIncrement()) {
+            const auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
+            const auto op_type = op_ref->GetOpType();
+            const auto rhs = op_ref->RHS()->Eval(context);
+            assert(op_ref->LHS() && op_ref->LHS()->IsEffectModifiedValueReference());
+
+            for (auto* target : targets) {
+                if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+                    continue;
+                if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name))
+                    meter->SetCurrent(OperateData(op_type, static_cast<double>(meter->Current()), rhs));
+            }
+
+        } else if (targets.size() == 1) {
+            auto* target = targets.front();
+            if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+                return;
+            if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name)) {
+                const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+                const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, target, cvv);
+                meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
             }
 
         } else {
             // calculate new meter values before modifying anything...
-            std::vector<std::tuple<double, int, Meter*>> target_new_meter_vals;
+            std::vector<std::pair<double, Meter*>> target_new_meter_vals;
             target_new_meter_vals.reserve(targets.size());
-            for (auto& target : targets) {
-                if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
+            for (auto* target : targets) {
+                if (!target || target->ObjectType() != UniverseObjectType::OBJ_SHIP)
                     continue;
-                auto ship = static_cast<Ship*>(target.get());
-
-                ScriptingContext target_context{context, target};
-                auto part_name = m_part_name->Eval(target_context);
-
-                if (Meter* meter = ship->GetPartMeter(m_meter, part_name))
-                    target_new_meter_vals.emplace_back(
-                        NewMeterValue(std::move(target_context), meter, m_value).first,
-                        target->ID(), meter);
+                if (Meter* meter = static_cast<Ship*>(target)->GetPartMeter(m_meter, part_name)) {
+                    const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+                    const ScriptingContext target_meter_context(context, ScriptingContext::Target{}, target, cvv);
+                    meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
+                }
             }
 
             // set new meter values and update accounting
-            for (auto [new_val, target_id, meter] : target_new_meter_vals)
+            for (auto [new_val, meter] : target_new_meter_vals)
                 meter->SetCurrent(new_val);
-        }
-
-        return;
-    }
-
-
-
-    // part name doesn't depend on target, so handle with single ValueRef evaluation
-    std::string part_name = m_part_name->Eval(context);
-
-    if (targets.size() == 1) {
-        auto& target = targets.front();
-        if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
-            return;
-        auto ship = static_cast<Ship*>(target.get());
-
-        if (Meter* meter = ship->GetPartMeter(m_meter, part_name)) {
-            auto new_val = NewMeterValue(context, meter, m_value, target).first;
-            meter->SetCurrent(new_val);
-        }
-
-    } else if (m_value->TargetInvariant()) {
-        // meter value does not depend on target, so handle with single ValueRef evaluation
-        auto new_val = m_value->Eval(context);
-        for (auto& target : targets) {
-            if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
-                continue;
-            auto ship = static_cast<Ship*>(target.get());
-            if (Meter* meter = ship->GetPartMeter(m_meter, part_name))
-                meter->SetCurrent(new_val);
-        }
-
-    } else if (m_value->SimpleIncrement()) {
-        auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
-        auto op_type = op_ref->GetOpType();
-        auto rhs = op_ref->RHS()->Eval(context);
-        [[maybe_unused]] auto lhs_ref = op_ref->LHS();
-        assert(lhs_ref && lhs_ref->GetReferenceType() == ValueRef::ReferenceType::EFFECT_TARGET_VALUE_REFERENCE);
-
-        for (auto& target : targets) {
-            if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
-                continue;
-            auto ship = static_cast<Ship*>(target.get());
-            if (Meter* meter = ship->GetPartMeter(m_meter, part_name)) {
-                auto lhs = meter->Current();
-                auto new_val = ValueRef::Operation<double>::EvalImpl(op_type, lhs, rhs);
-                meter->SetCurrent(new_val);
-            }
-        }
-
-    } else {
-        // calculate new meter values before modifying anything...
-        std::vector<std::tuple<double, int, Meter*>> target_new_meter_vals;
-        target_new_meter_vals.reserve(targets.size());
-        for (auto& target : targets) {
-            if (target->ObjectType() != UniverseObjectType::OBJ_SHIP)
-                continue;
-            auto ship = static_cast<Ship*>(target.get());
-            if (Meter* meter = ship->GetPartMeter(m_meter, part_name))
-                target_new_meter_vals.emplace_back(
-                    NewMeterValue(context, meter, m_value, target).first, target->ID(), meter);
-        }
-
-        // set new meter values and update accounting
-        for (auto [new_val, target_id, meter] : target_new_meter_vals) {
-            (void)target_id;
-            meter->SetCurrent(new_val);
         }
     }
 }
 
-std::string SetShipPartMeter::Dump(unsigned short ntabs) const {
+std::string SetShipPartMeter::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs);
     switch (m_meter) {
         case MeterType::METER_CAPACITY:            retval += "SetCapacity";        break;
@@ -990,8 +937,8 @@ void SetShipPartMeter::SetTopLevelContent(const std::string& content_name) {
         m_part_name->SetTopLevelContent(content_name);
 }
 
-unsigned int SetShipPartMeter::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetShipPartMeter::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetShipPartMeter");
     CheckSums::CheckSumCombine(retval, m_part_name);
@@ -1045,24 +992,18 @@ bool SetEmpireMeter::operator==(const Effect& rhs) const {
 
 namespace {
     Meter* GetEmpireMeter(ScriptingContext& context, int empire_id, const std::string& meter) {
-        auto empire = context.GetEmpire(empire_id);
+        const auto empire = context.GetEmpire(empire_id);
         if (!empire) {
-            DebugLogger(effects) << "SetEmpireMeter::Execute unable to find empire with id " << empire_id;
+            ErrorLogger(effects) << "SetEmpireMeter::Execute unable to find empire with id " << empire_id;
+            return nullptr;
+        } else if (Meter* m = empire->GetMeter(meter)) {
+            return m;
+        } else {
+            ErrorLogger(effects) << "SetEmpireMeter::Execute empire " << empire->Name()
+                                 << " doesn't have a meter named " << meter;
             return nullptr;
         }
-
-        if (Meter* m = empire->GetMeter(meter))
-            return m;
-
-        DebugLogger(effects) << "SetEmpireMeter::Execute empire " << empire->Name()
-                             << " doesn't have a meter named " << meter;
-        return nullptr;
     }
-
-    Meter* GetEmpireMeter(ScriptingContext& context,
-                          const std::unique_ptr<ValueRef::ValueRef<int>>& empire_id_ref,
-                          const std::string& meter)
-    { return GetEmpireMeter(context, empire_id_ref->Eval(context), meter); }
 }
 
 void SetEmpireMeter::Execute(ScriptingContext& context) const {
@@ -1072,9 +1013,19 @@ void SetEmpireMeter::Execute(ScriptingContext& context) const {
         ErrorLogger(effects) << "SetEmpireMeter::Execute missing empire id or value ValueRefs, or given empty meter name";
         return;
     }
-
-    if (auto meter = GetEmpireMeter(context, m_empire_id, m_meter))
-        meter->SetCurrent(NewMeterValue(context, meter, m_value).first);
+    const auto empire_id = m_empire_id->Eval(context);
+    auto* meter = GetEmpireMeter(context, empire_id, m_meter);
+    if (!meter) {
+        ErrorLogger(effects) << "SetEmpireMeter::Execute found no empire " << empire_id << " meter named " << m_meter;
+        return;
+    }
+    if (m_value->TargetInvariant()) {
+        meter->SetCurrent(static_cast<float>(m_value->Eval(context)));
+    } else {
+        const ScriptingContext::CurrentValueVariant cvv{static_cast<double>(meter->Current())};
+        const ScriptingContext target_meter_context{context, cvv};
+        meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
+    }
 }
 
 void SetEmpireMeter::Execute(ScriptingContext& context,
@@ -1103,48 +1054,58 @@ void SetEmpireMeter::Execute(ScriptingContext& context, const TargetSet& targets
         return;
     }
 
-
     if (!m_empire_id->TargetInvariant()) {
-        if (targets.size() == 1) {
-            auto& target = targets.front();
-            ScriptingContext target_context{context, target};
-            if (auto meter = GetEmpireMeter(target_context, m_empire_id, m_meter)) {
-                auto new_val = NewMeterValue(std::move(target_context), meter, m_value).first;
-                meter->SetCurrent(new_val);
+        // need to re-evaluate empire id for each target object
+        if (m_value->TargetInvariant()) {
+            // value to set does not depend on target object or current value of meter being set,
+            // so handle with a single ValueRef evaluation
+            const float new_val = static_cast<float>(m_value->Eval(context));
+
+            // empire id, and thus which meter is being modified, can be different per-target,
+            // so re-get for each target
+            for (auto* target : targets) {
+                if (target) {
+                    ScriptingContext target_context{context, ScriptingContext::Target{}, target, ZERO_INT_CURRENT_VALUE};
+                    const auto empire_id = m_empire_id->Eval(target_context);
+                    if (auto* meter = GetEmpireMeter(context, empire_id, m_meter))
+                        meter->SetCurrent(new_val);
+                }
             }
 
-        } else if (m_value->TargetInvariant()) {
-            // meter value does not depend on target, so handle with single ValueRef evaluation
-            // value is also target invariant, so just need to set once
-            auto new_val = m_value->Eval(context);
-            if (auto meter = GetEmpireMeter(context, m_empire_id, m_meter))
-                meter->SetCurrent(new_val);
-
         } else if (m_value->SimpleIncrement()) {
-            auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
-            auto op_type = op_ref->GetOpType();
-            auto rhs = op_ref->RHS()->Eval(context);
-            [[maybe_unused]] auto lhs_ref = op_ref->LHS();
-            assert(lhs_ref && lhs_ref->GetReferenceType() == ValueRef::ReferenceType::EFFECT_TARGET_VALUE_REFERENCE);
+            // new meter value is like "Value + Increment", where + may be any operation and
+            // Increment is a single target-invariant value (effectively constant for this Execute call)
+            const auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
+            assert(op_ref->RHS()->TargetInvariant());
+            const auto op_type = op_ref->GetOpType();
+            const auto rhs = op_ref->RHS()->Eval(context);
+            assert(op_ref->LHS() && op_ref->LHS()->IsEffectModifiedValueReference());
 
-            for (auto& target : targets) {
-                ScriptingContext target_context{context, target};
-                if (auto meter = GetEmpireMeter(target_context, m_empire_id, m_meter)) {
-                    auto lhs = meter->Current();
-                    auto new_val = ValueRef::Operation<double>::EvalImpl(op_type, lhs, rhs);
-                    meter->SetCurrent(new_val);
+            for (auto* target : targets) {
+                if (target) {
+                    ScriptingContext target_context{context, ScriptingContext::Target{}, target, ZERO_INT_CURRENT_VALUE};
+                    const auto empire_id = m_empire_id->Eval(target_context);
+                    if (auto* meter = GetEmpireMeter(context, empire_id, m_meter)) {
+                        const auto new_val = OperateData(op_type, static_cast<double>(meter->Current()), rhs);
+                        meter->SetCurrent(static_cast<float>(new_val));
+                    }
                 }
             }
 
         } else {
-            // for empire meters, unlike object meters, pre-calculating doesn't work
-            // since multiple target objects could be assoicated with the same
-            // empire meter, so have to calculate new meter values one at a time...
-            for (auto& target : targets) {
-                ScriptingContext target_context{context, target};
-                if (auto meter = GetEmpireMeter(target_context, m_empire_id, m_meter)) {
-                    auto new_val = NewMeterValue(std::move(target_context), meter, m_value).first;
-                    meter->SetCurrent(new_val);
+            // for empire meters, unlike object meters, pre-calculating new meter values
+            // won't work because multiple target objects could be associated with the same
+            // empire meter, which could have its current value modified repeatedly.
+            // thus, all new meter values need to be calculated separately and in order
+            for (auto* target : targets) {
+                if (target) {
+                    ScriptingContext target_context{context, ScriptingContext::Target{}, target, ZERO_INT_CURRENT_VALUE};
+                    const auto empire_id = m_empire_id->Eval(target_context);
+                    if (auto* meter = GetEmpireMeter(context, empire_id, m_meter)) {
+                        const ScriptingContext::CurrentValueVariant cvv{meter->Current()};
+                        const ScriptingContext target_meter_context{context, ScriptingContext::Target{}, target, cvv};
+                        meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
+                    }
                 }
             }
         }
@@ -1154,53 +1115,51 @@ void SetEmpireMeter::Execute(ScriptingContext& context, const TargetSet& targets
 
 
 
-    // empire_id doesn't depend on target, so handle with single ValueRef evaluation
-    const int empire_id = m_empire_id->Eval(context);
+    // empire id doesn't depend on target, so determine it with a single ValueRef evaluation
+    const auto empire_id = m_empire_id->Eval(context);
+    auto* meter = GetEmpireMeter(context, empire_id, m_meter);
+    if (!meter) {
+        ErrorLogger() << "SetEmpireMeter couldn't get empire id " << empire_id << " meter " << m_meter;
+        return;
+    }
 
-    if (targets.size() == 1) {
-        auto& target = targets.front();
-        if (auto meter = GetEmpireMeter(context, empire_id, m_meter)) {
-            auto new_val = NewMeterValue(context, meter, m_value, target).first;
-            meter->SetCurrent(new_val);
-        }
-
-    } else if (m_value->TargetInvariant()) {
-        // meter value does not depend on target, so handle with single ValueRef evaluation
-        // and just set once
-        auto new_val = m_value->Eval(context);
-        if (auto meter = GetEmpireMeter(context, empire_id, m_meter))
-            meter->SetCurrent(new_val);
+    if (m_value->TargetInvariant()) {
+        // meter value does not depend on target, so handle with single ValueRef evaluation and just set once
+        // if there are multiple targets, that shouldn't matter, since the same empire id will be used for all
+        meter->SetCurrent(static_cast<float>(m_value->Eval(context)));
 
     } else if (m_value->SimpleIncrement()) {
-        auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
-        auto op_type = op_ref->GetOpType();
-        auto rhs = op_ref->RHS()->Eval(context);
-        [[maybe_unused]] auto lhs_ref = op_ref->LHS();
-        assert(lhs_ref && lhs_ref->GetReferenceType() == ValueRef::ReferenceType::EFFECT_TARGET_VALUE_REFERENCE);
+        // meter value is modified by a fixed other value once per target
+        const auto op_ref = static_cast<ValueRef::Operation<double>*>(m_value.get());
+        assert(op_ref->RHS()->TargetInvariant());
+        const auto op_type = op_ref->GetOpType();
+        const auto rhs = op_ref->RHS()->Eval(context);
+        assert(op_ref->LHS() && op_ref->LHS()->IsEffectModifiedValueReference());
 
-        if (auto meter = GetEmpireMeter(context, empire_id, m_meter)) {
-            auto lhs = meter->Current();
-            for (auto& target : targets) {
-                (void)target; // don't use the target objects, but should re-apply the adjustment once per target
-                lhs = ValueRef::Operation<double>::EvalImpl(op_type, lhs, rhs);
-            }
-            meter->SetCurrent(lhs);
+        double lhs = static_cast<double>(meter->Current());
+        for (const auto* _ : targets) {
+            (void)_;
+            lhs = OperateData(op_type, lhs, rhs);
         }
+        meter->SetCurrent(static_cast<float>(lhs));
 
     } else {
-        // for empire meters, unlike object meters, pre-calculating doesn't work
-        // since multiple target objects could be assoicated with the same
-        // empire meter, so have to calculate new meter values one at a time...
-        for (auto& target : targets) {
-            if (auto meter = GetEmpireMeter(context, empire_id, m_meter)) {
-                auto new_val = NewMeterValue(context, meter, m_value, target).first;
-                meter->SetCurrent(new_val);
+        // for empire meters, unlike object meters, pre-calculating new meter values
+        // won't work because multiple target objects are associated with the same
+        // empire meter (all the same empire_id here), and that meter could have its
+        // current value modified repeatedly to different results.
+        // thus, all the new meter values need to be calculated separately and in order
+        for (auto* target : targets) {
+            if (target) {
+                const ScriptingContext::CurrentValueVariant cvv{meter->Current()};
+                const ScriptingContext target_meter_context{context, ScriptingContext::Target{}, target, cvv};
+                meter->SetCurrent(static_cast<float>(m_value->Eval(target_meter_context)));
             }
         }
     }
 }
 
-std::string SetEmpireMeter::Dump(unsigned short ntabs) const
+std::string SetEmpireMeter::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetEmpireMeter meter = " + m_meter + " empire = " + m_empire_id->Dump(ntabs) + " value = " + m_value->Dump(ntabs); }
 
 void SetEmpireMeter::SetTopLevelContent(const std::string& content_name) {
@@ -1210,8 +1169,8 @@ void SetEmpireMeter::SetTopLevelContent(const std::string& content_name) {
         m_value->SetTopLevelContent(content_name);
 }
 
-unsigned int SetEmpireMeter::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetEmpireMeter::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetEmpireMeter");
     CheckSums::CheckSumCombine(retval, m_empire_id);
@@ -1223,7 +1182,7 @@ unsigned int SetEmpireMeter::GetCheckSum() const {
 }
 
 std::unique_ptr<Effect> SetEmpireMeter::Clone() const {
-    auto meter = m_meter;
+    auto meter{m_meter};
     return std::make_unique<SetEmpireMeter>(ValueRef::CloneUnique(m_empire_id),
                                             meter,
                                             ValueRef::CloneUnique(m_value));
@@ -1275,12 +1234,12 @@ void SetEmpireStockpile::Execute(ScriptingContext& context) const {
         return;
     }
 
-    ScriptingContext::CurrentValueVariant cvv{empire->ResourceStockpile(m_stockpile)};
-    ScriptingContext stockpile_context{context, cvv};
+    const ScriptingContext::CurrentValueVariant cvv{empire->ResourceStockpile(m_stockpile)};
+    const ScriptingContext stockpile_context{context, cvv};
     empire->SetResourceStockpile(m_stockpile, m_value->Eval(stockpile_context));
 }
 
-std::string SetEmpireStockpile::Dump(unsigned short ntabs) const {
+std::string SetEmpireStockpile::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs);
     switch (m_stockpile) {
     // TODO: Support for other resource stockpiles?
@@ -1300,8 +1259,8 @@ void SetEmpireStockpile::SetTopLevelContent(const std::string& content_name) {
         m_value->SetTopLevelContent(content_name);
 }
 
-unsigned int SetEmpireStockpile::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetEmpireStockpile::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetEmpireStockpile");
     CheckSums::CheckSumCombine(retval, m_empire_id);
@@ -1351,9 +1310,10 @@ void SetEmpireCapital::Execute(ScriptingContext& context) const {
     int empire_id = m_empire_id->Eval(context);
     if (auto empire = context.GetEmpire(empire_id))
         empire->SetCapitalID(context.effect_target->ID(), context.ContextObjects());
+    context.Empires().RefreshCapitalIDs();
 }
 
-std::string SetEmpireCapital::Dump(unsigned short ntabs) const
+std::string SetEmpireCapital::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetEmpireCapital empire = " + m_empire_id->Dump(ntabs) + "\n"; }
 
 void SetEmpireCapital::SetTopLevelContent(const std::string& content_name) {
@@ -1361,8 +1321,8 @@ void SetEmpireCapital::SetTopLevelContent(const std::string& content_name) {
         m_empire_id->SetTopLevelContent(content_name);
 }
 
-unsigned int SetEmpireCapital::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetEmpireCapital::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetEmpireCapital");
     CheckSums::CheckSumCombine(retval, m_empire_id);
@@ -1385,11 +1345,11 @@ SetPlanetType::SetPlanetType(std::unique_ptr<ValueRef::ValueRef<PlanetType>>&& t
 void SetPlanetType::Execute(ScriptingContext& context) const {
     if (!context.effect_target || context.effect_target->ObjectType() != UniverseObjectType::OBJ_PLANET)
         return;
-    auto p = std::static_pointer_cast<Planet>(context.effect_target);
+    auto p = static_cast<Planet*>(context.effect_target);
 
-    ScriptingContext::CurrentValueVariant cvv{p->Type()};
-    ScriptingContext type_context{context, cvv};
-    PlanetType type = m_type->Eval(type_context);
+    const ScriptingContext::CurrentValueVariant cvv{p->Type()};
+    const ScriptingContext type_context{context, cvv};
+    const PlanetType type = m_type->Eval(type_context);
     p->SetType(type);
 
     if (type == PlanetType::PT_ASTEROIDS)
@@ -1402,7 +1362,7 @@ void SetPlanetType::Execute(ScriptingContext& context) const {
         p->SetSize(PlanetSize::SZ_HUGE);
 }
 
-std::string SetPlanetType::Dump(unsigned short ntabs) const
+std::string SetPlanetType::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetPlanetType type = " + m_type->Dump(ntabs) + "\n"; }
 
 void SetPlanetType::SetTopLevelContent(const std::string& content_name) {
@@ -1410,8 +1370,8 @@ void SetPlanetType::SetTopLevelContent(const std::string& content_name) {
         m_type->SetTopLevelContent(content_name);
 }
 
-unsigned int SetPlanetType::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetPlanetType::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetPlanetType");
     CheckSums::CheckSumCombine(retval, m_type);
@@ -1425,6 +1385,55 @@ std::unique_ptr<Effect> SetPlanetType::Clone() const
 
 
 ///////////////////////////////////////////////////////////
+// SetOriginalType                                         //
+///////////////////////////////////////////////////////////
+SetOriginalType::SetOriginalType(std::unique_ptr<ValueRef::ValueRef<PlanetType>>&& type) :
+    m_type(std::move(type))
+{}
+
+void SetOriginalType::Execute(ScriptingContext& context) const {
+    if (!context.effect_target || context.effect_target->ObjectType() != UniverseObjectType::OBJ_PLANET)
+        return;
+    auto p = static_cast<Planet*>(context.effect_target);
+
+    const ScriptingContext::CurrentValueVariant cvv{p->OriginalType()};
+    const ScriptingContext type_context{context, cvv};
+    PlanetType type = m_type->Eval(type_context);
+    p->SetOriginalType(type);
+
+    if (type == PlanetType::PT_ASTEROIDS)
+        p->SetSize(PlanetSize::SZ_ASTEROIDS);
+    else if (type == PlanetType::PT_GASGIANT)
+        p->SetSize(PlanetSize::SZ_GASGIANT);
+    else if (p->Size() == PlanetSize::SZ_ASTEROIDS)
+        p->SetSize(PlanetSize::SZ_TINY);
+    else if (p->Size() == PlanetSize::SZ_GASGIANT)
+        p->SetSize(PlanetSize::SZ_HUGE);
+}
+
+std::string SetOriginalType::Dump(uint8_t ntabs) const
+{ return DumpIndent(ntabs) + "SetOriginalType type = " + m_type->Dump(ntabs) + "\n"; }
+
+void SetOriginalType::SetTopLevelContent(const std::string& content_name) {
+    if (m_type)
+        m_type->SetTopLevelContent(content_name);
+}
+
+uint32_t SetOriginalType::GetCheckSum() const {
+    uint32_t retval{0};
+
+    CheckSums::CheckSumCombine(retval, "SetOriginalType");
+    CheckSums::CheckSumCombine(retval, m_type);
+
+    TraceLogger(effects) << "GetCheckSum(SetOriginalType): retval: " << retval;
+    return retval;
+}
+
+std::unique_ptr<Effect> SetOriginalType::Clone() const
+{ return std::make_unique<SetOriginalType>(ValueRef::CloneUnique(m_type)); }
+
+
+///////////////////////////////////////////////////////////
 // SetPlanetSize                                         //
 ///////////////////////////////////////////////////////////
 SetPlanetSize::SetPlanetSize(std::unique_ptr<ValueRef::ValueRef<PlanetSize>>&& size) :
@@ -1434,10 +1443,10 @@ SetPlanetSize::SetPlanetSize(std::unique_ptr<ValueRef::ValueRef<PlanetSize>>&& s
 void SetPlanetSize::Execute(ScriptingContext& context) const {
     if (!context.effect_target || context.effect_target->ObjectType() != UniverseObjectType::OBJ_PLANET)
         return;
-    auto p = std::static_pointer_cast<Planet>(context.effect_target);
+    auto p = static_cast<Planet*>(context.effect_target);
 
-    ScriptingContext::CurrentValueVariant cvv{p->Size()};
-    ScriptingContext size_context{context, cvv};
+    const ScriptingContext::CurrentValueVariant cvv{p->Size()};
+    const ScriptingContext size_context{context, cvv};
     PlanetSize size = m_size->Eval(size_context);
     p->SetSize(size);
 
@@ -1449,7 +1458,7 @@ void SetPlanetSize::Execute(ScriptingContext& context) const {
         p->SetType(PlanetType::PT_BARREN);
 }
 
-std::string SetPlanetSize::Dump(unsigned short ntabs) const
+std::string SetPlanetSize::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetPlanetSize size = " + m_size->Dump(ntabs) + "\n"; }
 
 void SetPlanetSize::SetTopLevelContent(const std::string& content_name) {
@@ -1457,8 +1466,8 @@ void SetPlanetSize::SetTopLevelContent(const std::string& content_name) {
         m_size->SetTopLevelContent(content_name);
 }
 
-unsigned int SetPlanetSize::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetPlanetSize::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetPlanetSize");
     CheckSums::CheckSumCombine(retval, m_size);
@@ -1472,6 +1481,52 @@ std::unique_ptr<Effect> SetPlanetSize::Clone() const
 
 
 ///////////////////////////////////////////////////////////
+// SetFocus                                            //
+///////////////////////////////////////////////////////////
+SetFocus::SetFocus(std::unique_ptr<ValueRef::ValueRef<std::string>>&& focus) :
+    m_focus_name(std::move(focus))
+{}
+
+void SetFocus::Execute(ScriptingContext& context) const {
+    if (!context.effect_target || !m_focus_name ||
+        context.effect_target->ObjectType() != UniverseObjectType::OBJ_PLANET)
+    { return; }
+
+    Planet* const planet = static_cast<Planet*>(context.effect_target);
+
+    const ScriptingContext::CurrentValueVariant cvv{planet->Focus()};
+    const ScriptingContext name_context{context, cvv};
+    auto new_focus = m_focus_name->Eval(name_context);
+    if (new_focus.empty() || new_focus == planet->Focus())
+        return;
+
+    // only change focus if new focus is available
+    if (planet->FocusAvailable(new_focus, context))
+        planet->SetFocus(std::move(new_focus), context);
+}
+
+std::string SetFocus::Dump(uint8_t ntabs) const
+{ return DumpIndent(ntabs) + "SetFocus name = " + m_focus_name->Dump(ntabs) + "\n"; }
+
+void SetFocus::SetTopLevelContent(const std::string& content_name) {
+    if (m_focus_name)
+        m_focus_name->SetTopLevelContent(content_name);
+}
+
+uint32_t SetFocus::GetCheckSum() const {
+    uint32_t retval{0};
+
+    CheckSums::CheckSumCombine(retval, "SetFocus");
+    CheckSums::CheckSumCombine(retval, m_focus_name);
+
+    TraceLogger(effects) << "GetCheckSum(SetFocus): retval: " << retval;
+    return retval;
+}
+
+std::unique_ptr<Effect> SetFocus::Clone() const
+{ return std::make_unique<SetFocus>(ValueRef::CloneUnique(m_focus_name)); }
+
+///////////////////////////////////////////////////////////
 // SetSpecies                                            //
 ///////////////////////////////////////////////////////////
 SetSpecies::SetSpecies(std::unique_ptr<ValueRef::ValueRef<std::string>>&& species) :
@@ -1483,35 +1538,36 @@ void SetSpecies::Execute(ScriptingContext& context) const {
         return;
 
     if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_SHIP) {
-        auto ship = std::static_pointer_cast<Ship>(context.effect_target);
-        ScriptingContext::CurrentValueVariant cvv{ship->SpeciesName()};
-        ScriptingContext name_context{context, cvv};
-        ship->SetSpecies(m_species_name->Eval(name_context));
+        auto ship = static_cast<Ship*>(context.effect_target);
+        const ScriptingContext::CurrentValueVariant cvv{ship->SpeciesName()};
+        const ScriptingContext name_context{context, cvv};
+        ship->SetSpecies(m_species_name->Eval(name_context), context.species);
         return;
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_PLANET) {
-        auto planet = std::static_pointer_cast<Planet>(context.effect_target);
+        auto planet = static_cast<Planet*>(context.effect_target);
 
-        ScriptingContext::CurrentValueVariant cvv{planet->SpeciesName()};
-        ScriptingContext name_context{context, cvv};
-        planet->SetSpecies(m_species_name->Eval(name_context));
+        const ScriptingContext::CurrentValueVariant cvv{planet->SpeciesName()};
+        const ScriptingContext name_context{context, cvv};
+        planet->SetSpecies(m_species_name->Eval(name_context), context.current_turn, context.species);
+        if (!planet->SpeciesName().empty())
+            planet->SetLastColonizedByEmpire(planet->Owner());
 
         // ensure non-empty and permissible focus setting for new species
         auto& initial_focus = planet->Focus();
-        std::vector<std::string> available_foci = planet->AvailableFoci();
+        auto available_foci = planet->AvailableFoci(context);
 
         // leave current focus unchanged if available.
-        for (const std::string& available_focus : available_foci) {
-            if (available_focus == initial_focus)
-                return;
-        }
+        if (std::any_of(available_foci.begin(), available_foci.end(),
+                        [&initial_focus](const auto& af) { return initial_focus == af; }))
+        { return; }
 
-        const Species* species = GetSpecies(planet->SpeciesName());
-        const auto& default_focus = species ? species->DefaultFocus() : "";
+        const Species* species = context.species.GetSpecies(planet->SpeciesName());
+        const auto default_focus = species ? std::string_view{species->DefaultFocus()} : "";
 
         // chose default focus if available. otherwise use any available focus
         bool default_available = false;
-        for (const std::string& available_focus : available_foci) {
+        for (const auto& available_focus : available_foci) {
             if (available_focus == default_focus) {
                 default_available = true;
                 break;
@@ -1519,13 +1575,13 @@ void SetSpecies::Execute(ScriptingContext& context) const {
         }
 
         if (default_available)
-            planet->SetFocus(default_focus);
+            planet->SetFocus(std::string{default_focus}, context);
         else if (!available_foci.empty())
-            planet->SetFocus(*available_foci.begin());
+            planet->SetFocus(std::string{available_foci.front()}, context);
     }
 }
 
-std::string SetSpecies::Dump(unsigned short ntabs) const
+std::string SetSpecies::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetSpecies name = " + m_species_name->Dump(ntabs) + "\n"; }
 
 void SetSpecies::SetTopLevelContent(const std::string& content_name) {
@@ -1533,8 +1589,8 @@ void SetSpecies::SetTopLevelContent(const std::string& content_name) {
         m_species_name->SetTopLevelContent(content_name);
 }
 
-unsigned int SetSpecies::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetSpecies::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetSpecies");
     CheckSums::CheckSumCombine(retval, m_species_name);
@@ -1559,7 +1615,7 @@ void SetOwner::Execute(ScriptingContext& context) const {
         return;
     int initial_owner = context.effect_target->Owner();
 
-    ScriptingContext owner_context{context, ScriptingContext::CurrentValueVariant{initial_owner}};
+    const ScriptingContext owner_context{context, ScriptingContext::CurrentValueVariant{initial_owner}};
     int empire_id = m_empire_id->Eval(owner_context);
     if (initial_owner == empire_id)
         return;
@@ -1570,11 +1626,11 @@ void SetOwner::Execute(ScriptingContext& context) const {
 
     // TODO: handle planets? buildings?
     if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_SHIP) {
-        auto ship = std::static_pointer_cast<Ship>(context.effect_target);
+        auto ship = static_cast<Ship*>(context.effect_target);
 
         // assigning ownership of a ship requires updating the containing
         // fleet, or splitting ship off into a new fleet at the same location
-        auto old_fleet = objects.get<Fleet>(ship->FleetID());
+        auto old_fleet = objects.getRaw<Fleet>(ship->FleetID());
         if (!old_fleet)
             return;
         if (old_fleet->Owner() == empire_id)
@@ -1585,8 +1641,8 @@ void SetOwner::Execute(ScriptingContext& context) const {
 
         // move ship into new fleet
         std::shared_ptr<Fleet> new_fleet;
-        if (auto system = objects.get<System>(ship->SystemID())) {
-            new_fleet = CreateNewFleet(std::move(system), std::move(ship), context, aggr);
+        if (auto system = objects.getRaw<System>(ship->SystemID())) {
+            new_fleet = CreateNewFleet(system, ship, context, aggr);
         } else {
             auto x = ship->X();
             auto y = ship->Y();
@@ -1603,7 +1659,7 @@ void SetOwner::Execute(ScriptingContext& context) const {
     }
 }
 
-std::string SetOwner::Dump(unsigned short ntabs) const
+std::string SetOwner::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetOwner empire = " + m_empire_id->Dump(ntabs) + "\n"; }
 
 void SetOwner::SetTopLevelContent(const std::string& content_name) {
@@ -1611,8 +1667,8 @@ void SetOwner::SetTopLevelContent(const std::string& content_name) {
         m_empire_id->SetTopLevelContent(content_name);
 }
 
-unsigned int SetOwner::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetOwner::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetOwner");
     CheckSums::CheckSumCombine(retval, m_empire_id);
@@ -1631,11 +1687,12 @@ std::unique_ptr<Effect> SetOwner::Clone() const
 SetSpeciesEmpireOpinion::SetSpeciesEmpireOpinion(
     std::unique_ptr<ValueRef::ValueRef<std::string>>&& species_name,
     std::unique_ptr<ValueRef::ValueRef<int>>&& empire_id,
-    std::unique_ptr<ValueRef::ValueRef<double>>&& opinion
-) :
+    std::unique_ptr<ValueRef::ValueRef<double>>&& opinion,
+    bool target_opinion) :
     m_species_name(std::move(species_name)),
     m_empire_id(std::move(empire_id)),
-    m_opinion(std::move(opinion))
+    m_opinion(std::move(opinion)),
+    m_target(target_opinion)
 {}
 
 void SetSpeciesEmpireOpinion::Execute(ScriptingContext& context) const {
@@ -1644,7 +1701,7 @@ void SetSpeciesEmpireOpinion::Execute(ScriptingContext& context) const {
     if (!m_species_name || !m_opinion || !m_empire_id)
         return;
 
-    int empire_id = m_empire_id->Eval(context);
+    const int empire_id = m_empire_id->Eval(context);
     if (empire_id == ALL_EMPIRES)
         return;
 
@@ -1652,16 +1709,19 @@ void SetSpeciesEmpireOpinion::Execute(ScriptingContext& context) const {
     if (species_name.empty())
         return;
 
-    double initial_opinion = context.species.SpeciesEmpireOpinion(species_name, empire_id);
-    ScriptingContext::CurrentValueVariant cvv{initial_opinion};
-    ScriptingContext opinion_context{context, cvv};
-    double opinion = m_opinion->Eval(opinion_context);
+    double previous_value_opinion = context.species.SpeciesEmpireOpinion(species_name, empire_id, m_target, true);
+    const ScriptingContext::CurrentValueVariant cvv{previous_value_opinion};
+    const ScriptingContext opinion_context{context, cvv};
+    float new_value_opinion = static_cast<float>(m_opinion->Eval(opinion_context));
 
-    context.species.SetSpeciesEmpireOpinion(species_name, empire_id, opinion);
+    TraceLogger(effects) << "SetSpeciesEmpire" << (m_target ? "Target" : "") << "Opinion "
+                         << " initially: " << previous_value_opinion << " new: " << new_value_opinion;
+
+    context.species.SetSpeciesEmpireOpinion(species_name, empire_id, new_value_opinion, m_target);
 }
 
-std::string SetSpeciesEmpireOpinion::Dump(unsigned short ntabs) const
-{ return DumpIndent(ntabs) + "SetSpeciesEmpireOpinion empire = " + m_empire_id->Dump(ntabs) + "\n"; }
+std::string SetSpeciesEmpireOpinion::Dump(uint8_t ntabs) const
+{ return DumpIndent(ntabs) + "SetSpeciesEmpireOpinion empire = " + m_empire_id->Dump(ntabs) + "\n"; } // TODO: complete this
 
 void SetSpeciesEmpireOpinion::SetTopLevelContent(const std::string& content_name) {
     if (m_empire_id)
@@ -1672,13 +1732,14 @@ void SetSpeciesEmpireOpinion::SetTopLevelContent(const std::string& content_name
         m_opinion->SetTopLevelContent(content_name);
 }
 
-unsigned int SetSpeciesEmpireOpinion::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetSpeciesEmpireOpinion::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetSpeciesEmpireOpinion");
     CheckSums::CheckSumCombine(retval, m_species_name);
     CheckSums::CheckSumCombine(retval, m_empire_id);
     CheckSums::CheckSumCombine(retval, m_opinion);
+    CheckSums::CheckSumCombine(retval, m_target);
 
     TraceLogger(effects) << "GetCheckSum(SetSpeciesEmpireOpinion): retval: " << retval;
     return retval;
@@ -1687,7 +1748,8 @@ unsigned int SetSpeciesEmpireOpinion::GetCheckSum() const {
 std::unique_ptr<Effect> SetSpeciesEmpireOpinion::Clone() const {
     return std::make_unique<SetSpeciesEmpireOpinion>(ValueRef::CloneUnique(m_species_name),
                                                      ValueRef::CloneUnique(m_empire_id),
-                                                     ValueRef::CloneUnique(m_opinion));
+                                                     ValueRef::CloneUnique(m_opinion),
+                                                     m_target);
 }
 
 
@@ -1697,11 +1759,12 @@ std::unique_ptr<Effect> SetSpeciesEmpireOpinion::Clone() const {
 SetSpeciesSpeciesOpinion::SetSpeciesSpeciesOpinion(
     std::unique_ptr<ValueRef::ValueRef<std::string>>&& opinionated_species_name,
     std::unique_ptr<ValueRef::ValueRef<std::string>>&& rated_species_name,
-    std::unique_ptr<ValueRef::ValueRef<double>>&& opinion
-) :
+    std::unique_ptr<ValueRef::ValueRef<double>>&& opinion,
+    bool target_opinion) :
     m_opinionated_species_name(std::move(opinionated_species_name)),
     m_rated_species_name(std::move(rated_species_name)),
-    m_opinion(std::move(opinion))
+    m_opinion(std::move(opinion)),
+    m_target(target_opinion)
 {}
 
 void SetSpeciesSpeciesOpinion::Execute(ScriptingContext& context) const {
@@ -1710,23 +1773,24 @@ void SetSpeciesSpeciesOpinion::Execute(ScriptingContext& context) const {
     if (!m_opinionated_species_name || !m_opinion || !m_rated_species_name)
         return;
 
-    std::string opinionated_species_name = m_opinionated_species_name->Eval(context);
+    const std::string opinionated_species_name = m_opinionated_species_name->Eval(context);
     if (opinionated_species_name.empty())
         return;
 
-    std::string rated_species_name = m_rated_species_name->Eval(context);
+    const std::string rated_species_name = m_rated_species_name->Eval(context);
     if (rated_species_name.empty())
         return;
 
-    float initial_opinion = context.species.SpeciesSpeciesOpinion(opinionated_species_name, rated_species_name);
-    ScriptingContext::CurrentValueVariant cvv{initial_opinion};
-    ScriptingContext opinion_context{context, cvv};
-    float opinion = m_opinion->Eval(opinion_context);
+    const float previous_value_opinion = context.species.SpeciesSpeciesOpinion(opinionated_species_name,
+                                                                               rated_species_name, m_target, true);
+    const ScriptingContext::CurrentValueVariant cvv{previous_value_opinion};
+    const ScriptingContext opinion_context{context, cvv};
+    const float new_value_opinion = static_cast<float>(m_opinion->Eval(opinion_context));
 
-    context.species.SetSpeciesSpeciesOpinion(opinionated_species_name, rated_species_name, opinion);
+    context.species.SetSpeciesSpeciesOpinion(opinionated_species_name, rated_species_name, new_value_opinion, m_target);
 }
 
-std::string SetSpeciesSpeciesOpinion::Dump(unsigned short ntabs) const
+std::string SetSpeciesSpeciesOpinion::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetSpeciesSpeciesOpinion" + "\n"; }
 
 void SetSpeciesSpeciesOpinion::SetTopLevelContent(const std::string& content_name) {
@@ -1738,13 +1802,14 @@ void SetSpeciesSpeciesOpinion::SetTopLevelContent(const std::string& content_nam
         m_opinion->SetTopLevelContent(content_name);
 }
 
-unsigned int SetSpeciesSpeciesOpinion::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetSpeciesSpeciesOpinion::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetSpeciesSpeciesOpinion");
     CheckSums::CheckSumCombine(retval, m_opinionated_species_name);
     CheckSums::CheckSumCombine(retval, m_rated_species_name);
     CheckSums::CheckSumCombine(retval, m_opinion);
+    CheckSums::CheckSumCombine(retval, m_target);
 
     TraceLogger(effects) << "GetCheckSum(SetSpeciesSpeciesOpinion): retval: " << retval;
     return retval;
@@ -1753,7 +1818,8 @@ unsigned int SetSpeciesSpeciesOpinion::GetCheckSum() const {
 std::unique_ptr<Effect> SetSpeciesSpeciesOpinion::Clone() const {
     return std::make_unique<SetSpeciesSpeciesOpinion>(ValueRef::CloneUnique(m_opinionated_species_name),
                                                       ValueRef::CloneUnique(m_rated_species_name),
-                                                      ValueRef::CloneUnique(m_opinion));
+                                                      ValueRef::CloneUnique(m_opinion),
+                                                      m_target);
 }
 
 
@@ -1775,7 +1841,7 @@ void CreatePlanet::Execute(ScriptingContext& context) const {
         ErrorLogger(effects) << "CreatePlanet::Execute passed no target object";
         return;
     }
-    auto system = context.ContextObjects().get<System>(context.effect_target->SystemID());
+    auto system = context.ContextObjects().getRaw<System>(context.effect_target->SystemID());
     if (!system) {
         ErrorLogger(effects) << "CreatePlanet::Execute couldn't get a System object at which to create the planet";
         return;
@@ -1783,16 +1849,17 @@ void CreatePlanet::Execute(ScriptingContext& context) const {
 
     PlanetSize target_size = PlanetSize::INVALID_PLANET_SIZE;
     PlanetType target_type = PlanetType::INVALID_PLANET_TYPE;
-    if (auto location_planet = std::dynamic_pointer_cast<const Planet>(context.effect_target)) {
+    if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_PLANET) {
+        auto location_planet = static_cast<const Planet*>(context.effect_target);
         target_size = location_planet->Size();
         target_type = location_planet->Type();
     }
 
-    ScriptingContext::CurrentValueVariant size_cvv{target_size};
-    ScriptingContext size_context{context, size_cvv};
+    const ScriptingContext::CurrentValueVariant size_cvv{target_size};
+    const ScriptingContext size_context{context, size_cvv};
     PlanetSize size = m_size->Eval(size_context);
-    ScriptingContext::CurrentValueVariant type_cvv{target_type};
-    ScriptingContext type_context{context, type_cvv};
+    const ScriptingContext::CurrentValueVariant type_cvv{target_type};
+    const ScriptingContext type_context{context, type_cvv};
     PlanetType type = m_type->Eval(type_context);
     if (size == PlanetSize::INVALID_PLANET_SIZE || type == PlanetType::INVALID_PLANET_TYPE) {
         ErrorLogger(effects) << "CreatePlanet::Execute got invalid size or type of planet to create...";
@@ -1800,8 +1867,7 @@ void CreatePlanet::Execute(ScriptingContext& context) const {
     }
 
     // determine if and which orbits are available
-    std::set<int> free_orbits = system->FreeOrbits();
-    if (free_orbits.empty()) {
+    if (system->FreeOrbits().empty()) {
         ErrorLogger(effects) << "CreatePlanet::Execute couldn't find any free orbits in system where planet was to be created";
         return;
     }
@@ -1813,7 +1879,7 @@ void CreatePlanet::Execute(ScriptingContext& context) const {
         return;
     }
 
-    system->Insert(planet);   // let system chose an orbit for planet
+    system->Insert(planet, System::NO_ORBIT, context.current_turn, context.ContextObjects()); // let system chose an orbit for planet
 
     std::string name_str;
     if (m_name) {
@@ -1828,14 +1894,14 @@ void CreatePlanet::Execute(ScriptingContext& context) const {
     planet->Rename(std::move(name_str));
 
     // apply after-creation effects
-    ScriptingContext local_context{context, std::move(planet), ScriptingContext::DEFAULT_CURRENT_VALUE};
+    ScriptingContext local_context{context, ScriptingContext::Target{}, planet.get(), ScriptingContext::DEFAULT_CURRENT_VALUE};
     for (auto& effect : m_effects_to_apply_after) {
         if (effect)
             effect->Execute(local_context);
     }
 }
 
-std::string CreatePlanet::Dump(unsigned short ntabs) const {
+std::string CreatePlanet::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "CreatePlanet";
     if (m_size)
         retval += " size = " + m_size->Dump(ntabs);
@@ -1860,8 +1926,8 @@ void CreatePlanet::SetTopLevelContent(const std::string& content_name) {
     }
 }
 
-unsigned int CreatePlanet::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t CreatePlanet::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "CreatePlanet");
     CheckSums::CheckSumCombine(retval, m_type);
@@ -1899,10 +1965,10 @@ void CreateBuilding::Execute(ScriptingContext& context) const {
 
     Planet* location = nullptr;
     if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_PLANET) {
-        location = static_cast<Planet*>(context.effect_target.get());
+        location = static_cast<Planet*>(context.effect_target);
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_BUILDING) {
-        auto* location_building = static_cast<Building*>(context.effect_target.get());
+        auto* location_building = static_cast<Building*>(context.effect_target);
         location = context.ContextObjects().getRaw<Planet>(location_building->PlanetID());
     }
     if (!location) {
@@ -1937,7 +2003,7 @@ void CreateBuilding::Execute(ScriptingContext& context) const {
 
     auto system = context.ContextObjects().getRaw<System>(location->SystemID());
     if (system)
-        system->Insert(building);
+        system->Insert(building, System::NO_ORBIT, context.current_turn, context.ContextObjects());
 
     if (m_name) {
         std::string name_str = m_name->Eval(context);
@@ -1947,14 +2013,14 @@ void CreateBuilding::Execute(ScriptingContext& context) const {
     }
 
     // apply after-creation effects
-    ScriptingContext local_context{context, std::move(building), ScriptingContext::DEFAULT_CURRENT_VALUE};
+    ScriptingContext local_context{context, ScriptingContext::Target{}, building.get(), ScriptingContext::DEFAULT_CURRENT_VALUE};
     for (auto& effect : m_effects_to_apply_after) {
         if (effect)
             effect->Execute(local_context);
     }
 }
 
-std::string CreateBuilding::Dump(unsigned short ntabs) const {
+std::string CreateBuilding::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "CreateBuilding";
     if (m_building_type_name)
         retval += " type = " + m_building_type_name->Dump(ntabs);
@@ -1975,8 +2041,8 @@ void CreateBuilding::SetTopLevelContent(const std::string& content_name) {
     }
 }
 
-unsigned int CreateBuilding::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t CreateBuilding::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "CreateBuilding");
     CheckSums::CheckSumCombine(retval, m_building_type_name);
@@ -2027,7 +2093,7 @@ void CreateShip::Execute(ScriptingContext& context) const {
         return;
     }
 
-    auto system = context.ContextObjects().get<System>(context.effect_target->SystemID());
+    auto system = context.ContextObjects().getRaw<System>(context.effect_target->SystemID());
     if (!system) {
         ErrorLogger(effects) << "CreateShip::Execute passed a target not in a system";
         return;
@@ -2089,7 +2155,7 @@ void CreateShip::Execute(ScriptingContext& context) const {
     auto ship = context.ContextUniverse().InsertNew<Ship>(
         empire_id, design_id, std::move(species_name), context.ContextUniverse(),
         context.species, ALL_EMPIRES, context.current_turn);
-    system->Insert(ship);
+    system->Insert(ship, System::NO_ORBIT, context.current_turn, context.ContextObjects());
 
     if (m_name) {
         std::string name_str = m_name->Eval(context);
@@ -2115,17 +2181,17 @@ void CreateShip::Execute(ScriptingContext& context) const {
 
     context.ContextUniverse().SetEmpireKnowledgeOfShipDesign(design_id, empire_id);
 
-    CreateNewFleet(std::move(system), ship, context);
+    CreateNewFleet(system, ship.get(), context);
 
     // apply after-creation effects
-    ScriptingContext local_context{context, std::move(ship), ScriptingContext::DEFAULT_CURRENT_VALUE};
+    ScriptingContext local_context{context, ScriptingContext::Target{}, ship.get(), ScriptingContext::DEFAULT_CURRENT_VALUE};
     for (auto& effect : m_effects_to_apply_after) {
         if (effect)
             effect->Execute(local_context);
     }
 }
 
-std::string CreateShip::Dump(unsigned short ntabs) const {
+std::string CreateShip::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "CreateShip";
     if (m_design_id)
         retval += " designid = " + m_design_id->Dump(ntabs);
@@ -2160,8 +2226,8 @@ void CreateShip::SetTopLevelContent(const std::string& content_name) {
     }
 }
 
-unsigned int CreateShip::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t CreateShip::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "CreateShip");
     CheckSums::CheckSumCombine(retval, m_design_name);
@@ -2262,30 +2328,30 @@ void CreateField::Execute(ScriptingContext& context) const {
     // if target is a system, and location matches system location, can put
     // field into system
     if (target->ObjectType() == UniverseObjectType::OBJ_SYSTEM) {
-        auto system = static_cast<System*>(target.get());
+        auto system = static_cast<System*>(target);
         if ((!m_y || y == system->Y()) && (!m_x || x == system->X()))
-            system->Insert(field);
+            system->Insert(field, System::NO_ORBIT, context.current_turn, context.ContextObjects());
     }
 
-    std::string name_str;
     if (m_name) {
-        name_str = m_name->Eval(context);
+        auto name_str = m_name->Eval(context);
         if (m_name->ConstantExpr() && UserStringExists(name_str))
-            name_str = UserString(name_str);
+            field->Rename(UserString(name_str));
+        else
+            field->Rename(std::move(name_str));
     } else {
-        name_str = UserString(field_type->Name());
+        field->Rename(UserString(field_type->Name()));
     }
-    field->Rename(std::move(name_str));
 
     // apply after-creation effects
-    ScriptingContext new_field_target_context{context, std::move(field), ScriptingContext::DEFAULT_CURRENT_VALUE};
+    ScriptingContext new_field_target_context{context, ScriptingContext::Target{}, field.get(), ScriptingContext::DEFAULT_CURRENT_VALUE};
     for (auto& effect : m_effects_to_apply_after) {
         if (effect)
             effect->Execute(new_field_target_context);
     }
 }
 
-std::string CreateField::Dump(unsigned short ntabs) const {
+std::string CreateField::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "CreateField";
     if (m_field_type_name)
         retval += " type = " + m_field_type_name->Dump(ntabs);
@@ -2319,8 +2385,8 @@ void CreateField::SetTopLevelContent(const std::string& content_name) {
     }
 }
 
-unsigned int CreateField::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t CreateField::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "CreateField");
     CheckSums::CheckSumCombine(retval, m_field_type_name);
@@ -2408,14 +2474,14 @@ void CreateSystem::Execute(ScriptingContext& context) const {
     }
 
     // apply after-creation effects
-    ScriptingContext system_target_context{context, std::move(system), ScriptingContext::DEFAULT_CURRENT_VALUE};
+    ScriptingContext system_target_context{context, ScriptingContext::Target{}, system.get(), ScriptingContext::DEFAULT_CURRENT_VALUE};
     for (auto& effect : m_effects_to_apply_after) {
         if (effect)
             effect->Execute(system_target_context);
     }
 }
 
-std::string CreateSystem::Dump(unsigned short ntabs) const {
+std::string CreateSystem::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "CreateSystem";
     if (m_type)
         retval += " type = " + m_type->Dump(ntabs);
@@ -2445,8 +2511,8 @@ void CreateSystem::SetTopLevelContent(const std::string& content_name) {
     }
 }
 
-unsigned int CreateSystem::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t CreateSystem::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "CreateSystem");
     CheckSums::CheckSumCombine(retval, m_type);
@@ -2484,11 +2550,11 @@ void Destroy::Execute(ScriptingContext& context) const {
     context.ContextUniverse().EffectDestroy(context.effect_target->ID(), source_id);
 }
 
-std::string Destroy::Dump(unsigned short ntabs) const
+std::string Destroy::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "Destroy\n"; }
 
-unsigned int Destroy::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t Destroy::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "Destroy");
 
@@ -2525,15 +2591,15 @@ void AddSpecial::Execute(ScriptingContext& context) const {
     float initial_capacity = context.effect_target->SpecialCapacity(name);  // returns 0.0f if no such special yet present
     float capacity = initial_capacity;
     if (m_capacity) {
-        ScriptingContext::CurrentValueVariant cvv{capacity};
-        ScriptingContext capacity_context{context, cvv};
-        capacity = m_capacity->Eval(capacity_context);
+        const ScriptingContext::CurrentValueVariant cvv{capacity};
+        const ScriptingContext capacity_context{context, cvv};
+        capacity = static_cast<float>(m_capacity->Eval(capacity_context));
     }
 
-    context.effect_target->SetSpecialCapacity(name, capacity);
+    context.effect_target->SetSpecialCapacity(std::move(name), capacity, context.current_turn);
 }
 
-std::string AddSpecial::Dump(unsigned short ntabs) const {
+std::string AddSpecial::Dump(uint8_t ntabs) const {
     return DumpIndent(ntabs) + "AddSpecial name = " +  (m_name ? m_name->Dump(ntabs) : "") +
         " capacity = " + (m_capacity ? m_capacity->Dump(ntabs) : "0.0") +  "\n";
 }
@@ -2545,8 +2611,8 @@ void AddSpecial::SetTopLevelContent(const std::string& content_name) {
         m_capacity->SetTopLevelContent(content_name);
 }
 
-unsigned int AddSpecial::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t AddSpecial::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "AddSpecial");
     CheckSums::CheckSumCombine(retval, m_name);
@@ -2583,7 +2649,7 @@ void RemoveSpecial::Execute(ScriptingContext& context) const {
     context.effect_target->RemoveSpecial(name);
 }
 
-std::string RemoveSpecial::Dump(unsigned short ntabs) const {
+std::string RemoveSpecial::Dump(uint8_t ntabs) const {
     return DumpIndent(ntabs) + "RemoveSpecial name = " +  (m_name ? m_name->Dump(ntabs) : "") + "\n";
 }
 
@@ -2592,8 +2658,8 @@ void RemoveSpecial::SetTopLevelContent(const std::string& content_name) {
         m_name->SetTopLevelContent(content_name);
 }
 
-unsigned int RemoveSpecial::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t RemoveSpecial::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "RemoveSpecial");
     CheckSums::CheckSumCombine(retval, m_name);
@@ -2613,47 +2679,54 @@ AddStarlanes::AddStarlanes(std::unique_ptr<Condition::Condition>&& other_lane_en
     m_other_lane_endpoint_condition(std::move(other_lane_endpoint_condition))
 {}
 
+namespace {
+    constexpr auto not_null = [](const auto* o) -> bool { return o; };
+}
+
 void AddStarlanes::Execute(ScriptingContext& context) const {
+    const auto to_system = [&context](UniverseObject* o) -> System* {
+        if (o->ObjectType() == UniverseObjectType::OBJ_SYSTEM)
+            return static_cast<System*>(o);
+        return context.ContextObjects().getRaw<System>(o->SystemID()); // may be nullptr
+    };
+
     // get target system
     if (!context.effect_target) {
         ErrorLogger(effects) << "AddStarlanes::Execute passed no target object";
         return;
     }
-    auto target_system = std::dynamic_pointer_cast<System>(context.effect_target);
-    if (!target_system)
-        target_system = context.ContextObjects().get<System>(context.effect_target->SystemID());
+    auto* target_system = to_system(context.effect_target);
     if (!target_system)
         return; // nothing to do!
 
-    // get other endpoint systems...
-    Condition::ObjectSet endpoint_objects;
-    // apply endpoints condition to determine objects whose systems should be
+    // from endpoints condition, get objects whose systems should be
     // connected to the source system
-    m_other_lane_endpoint_condition->Eval(context, endpoint_objects);
+    TargetSet endpoint_objects = m_other_lane_endpoint_condition->Eval(context);
 
     // early exit if there are no valid locations
     if (endpoint_objects.empty())
         return; // nothing to do!
 
     // get systems containing at least one endpoint object
-    std::set<std::shared_ptr<System>> endpoint_systems;
-    for (auto& endpoint_object : endpoint_objects) {
-        auto endpoint_system = std::dynamic_pointer_cast<const System>(endpoint_object);
-        if (!endpoint_system)
-            endpoint_system = context.ContextObjects().get<System>(endpoint_object->SystemID());
-        if (!endpoint_system)
-            continue;
-        endpoint_systems.insert(std::const_pointer_cast<System>(endpoint_system));
-    }
+    std::vector<System*> endpoint_systems;
+    endpoint_systems.reserve(endpoint_objects.size());
+    auto end_sys_rng = endpoint_objects | range_filter(not_null)
+        | range_transform(to_system) | range_filter(not_null);
+    range_copy(end_sys_rng, std::back_inserter(endpoint_systems));
+
+    // ensure uniqueness of results
+    std::sort(endpoint_systems.begin(), endpoint_systems.end());
+    const auto it = std::unique(endpoint_systems.begin(), endpoint_systems.end());
+    endpoint_systems.resize(std::distance(endpoint_systems.begin(), it));
 
     // add starlanes from target to endpoint systems
-    for (auto& endpoint_system : endpoint_systems) {
+    for (auto endpoint_system : endpoint_systems) {
         target_system->AddStarlane(endpoint_system->ID());
         endpoint_system->AddStarlane(target_system->ID());
     }
 }
 
-std::string AddStarlanes::Dump(unsigned short ntabs) const
+std::string AddStarlanes::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "AddStarlanes endpoints = " + m_other_lane_endpoint_condition->Dump(ntabs) + "\n"; }
 
 void AddStarlanes::SetTopLevelContent(const std::string& content_name) {
@@ -2661,8 +2734,8 @@ void AddStarlanes::SetTopLevelContent(const std::string& content_name) {
         m_other_lane_endpoint_condition->SetTopLevelContent(content_name);
 }
 
-unsigned int AddStarlanes::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t AddStarlanes::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "AddStarlanes");
     CheckSums::CheckSumCombine(retval, m_other_lane_endpoint_condition);
@@ -2688,43 +2761,39 @@ void RemoveStarlanes::Execute(ScriptingContext& context) const {
         ErrorLogger(effects) << "AddStarlanes::Execute passed no target object";
         return;
     }
-    auto target_system = dynamic_cast<System*>(context.effect_target.get());
+    auto target_system = dynamic_cast<System*>(context.effect_target);
     if (!target_system)
         target_system = context.ContextObjects().getRaw<System>(context.effect_target->SystemID());
     if (!target_system)
         return; // nothing to do!
+    const int target_system_id = target_system->ID();
 
     // get other endpoint systems...
 
-    Condition::ObjectSet endpoint_objects;
     // apply endpoints condition to determine objects whose systems should be
     // connected to the source system
-    m_other_lane_endpoint_condition->Eval(context, endpoint_objects);
+    const auto endpoint_objects = m_other_lane_endpoint_condition->Eval(std::as_const(context));
 
-    // early exit if there are no valid locations - can't move anything if there's nowhere to move to
-    if (endpoint_objects.empty())
-        return; // nothing to do!
-
-    // get systems containing at least one endpoint object
-    std::set<System*> endpoint_systems;
-    for (auto& endpoint_object : endpoint_objects) {
-        auto endpoint_system = dynamic_cast<const System*>(endpoint_object.get());
-        if (!endpoint_system)
-            endpoint_system = context.ContextObjects().getRaw<System>(endpoint_object->SystemID());
-        if (!endpoint_system)
-            continue;
-        endpoint_systems.insert(const_cast<System*>(endpoint_system));
-    }
+    // get system IDs of those objects
+    std::vector<int> endpoint_system_ids;
+    endpoint_system_ids.reserve(endpoint_objects.size());
+    std::transform(endpoint_objects.begin(), endpoint_objects.end(), std::back_inserter(endpoint_system_ids),
+                   [](const UniverseObject* obj) { return obj ? obj->SystemID() : INVALID_OBJECT_ID; });
+    // uniquify
+    std::sort(endpoint_system_ids.begin(), endpoint_system_ids.end());
+    auto unique_it = std::unique(endpoint_system_ids.begin(), endpoint_system_ids.end());
+    endpoint_system_ids.erase(unique_it, endpoint_system_ids.end());
+    // get all those systems
+    auto endpoint_systems = context.ContextObjects().findRaw<System>(endpoint_system_ids);
 
     // remove starlanes from target to endpoint systems
-    int target_system_id = target_system->ID();
-    for (auto& endpoint_system : endpoint_systems) {
+    for (auto* endpoint_system : endpoint_systems) {
         target_system->RemoveStarlane(endpoint_system->ID());
         endpoint_system->RemoveStarlane(target_system_id);
     }
 }
 
-std::string RemoveStarlanes::Dump(unsigned short ntabs) const
+std::string RemoveStarlanes::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "RemoveStarlanes endpoints = " + m_other_lane_endpoint_condition->Dump(ntabs) + "\n"; }
 
 void RemoveStarlanes::SetTopLevelContent(const std::string& content_name) {
@@ -2732,8 +2801,8 @@ void RemoveStarlanes::SetTopLevelContent(const std::string& content_name) {
         m_other_lane_endpoint_condition->SetTopLevelContent(content_name);
 }
 
-unsigned int RemoveStarlanes::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t RemoveStarlanes::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "RemoveStarlanes");
     CheckSums::CheckSumCombine(retval, m_other_lane_endpoint_condition);
@@ -2759,16 +2828,16 @@ void SetStarType::Execute(ScriptingContext& context) const {
         return;
     }
     if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_SYSTEM) {
-        auto s = static_cast<System*>(context.effect_target.get());
-        ScriptingContext::CurrentValueVariant cvv{s->GetStarType()};
-        ScriptingContext type_context{context, cvv};
+        auto s = static_cast<System*>(context.effect_target);
+        const ScriptingContext::CurrentValueVariant cvv{s->GetStarType()};
+        const ScriptingContext type_context{context, cvv};
         s->SetStarType(m_type->Eval(type_context));
     } else {
         ErrorLogger(effects) << "SetStarType::Execute given a non-system target";
     }
 }
 
-std::string SetStarType::Dump(unsigned short ntabs) const
+std::string SetStarType::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetStarType type = " + m_type->Dump(ntabs) + "\n"; }
 
 void SetStarType::SetTopLevelContent(const std::string& content_name) {
@@ -2776,8 +2845,8 @@ void SetStarType::SetTopLevelContent(const std::string& content_name) {
         m_type->SetTopLevelContent(content_name);
 }
 
-unsigned int SetStarType::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetStarType::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetStarType");
     CheckSums::CheckSumCombine(retval, m_type);
@@ -2806,23 +2875,22 @@ void MoveTo::Execute(ScriptingContext& context) const {
     Universe& universe = context.ContextUniverse();
     ObjectMap& objects = context.ContextObjects();
 
-    Condition::ObjectSet valid_locations;
     // apply location condition to determine valid location to move target to
-    m_location_condition->Eval(context, valid_locations);
+    TargetSet valid_locations = m_location_condition->Eval(context);
 
     // early exit if there are no valid locations - can't move anything if there's nowhere to move to
     if (valid_locations.empty())
         return;
 
     // "randomly" pick a destination
-    auto destination = std::const_pointer_cast<UniverseObject>(*valid_locations.begin());
+    auto destination = valid_locations.front();
     if (!destination) {
         ErrorLogger(effects) << "MoveTo::Execute got null destination!";
         return;
     }
 
     // get previous system from which to remove object if necessary
-    auto old_sys = objects.get<System>(context.effect_target->SystemID());
+    auto old_sys = objects.getRaw<System>(context.effect_target->SystemID());
 
     auto get_fleet = [](auto* destination, ObjectMap& objs) -> Fleet* {
         const auto obj_type = destination->ObjectType();
@@ -2848,24 +2916,24 @@ void MoveTo::Execute(ScriptingContext& context) const {
 
     // do the moving...
     if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_FLEET) {
-        auto fleet = std::static_pointer_cast<Fleet>(context.effect_target);
+        auto fleet = static_cast<Fleet*>(context.effect_target);
         // fleets can be inserted into the system that contains the destination
         // object (or the destination object itself if it is a system)
-        if (auto dest_system = objects.get<System>(destination->SystemID())) {
+        if (auto dest_system = objects.getRaw<System>(destination->SystemID())) {
             if (fleet->SystemID() != dest_system->ID()) {
                 // remove fleet from old system, put into new system
                 if (old_sys)
                     old_sys->Remove(fleet->ID());
-                dest_system->Insert(fleet);
+                dest_system->Insert(fleet, System::NO_ORBIT, context.current_turn, objects);
 
                 // also move ships of fleet
-                for (auto& ship : objects.find<Ship>(fleet->ShipIDs())) {
+                for (auto* ship : objects.findRaw<Ship>(fleet->ShipIDs())) {
                     if (old_sys)
                         old_sys->Remove(ship->ID());
-                    dest_system->Insert(ship);
+                    dest_system->Insert(ship, System::NO_ORBIT, context.current_turn, objects);
                 }
 
-                ExploreSystem(dest_system->ID(), fleet, context);
+                ExploreSystem(dest_system->ID(), fleet->Owner(), context);
                 UpdateFleetRoute(fleet, INVALID_OBJECT_ID, INVALID_OBJECT_ID, context);  // inserted into dest_system, so next and previous systems are invalid objects
             }
 
@@ -2880,7 +2948,7 @@ void MoveTo::Execute(ScriptingContext& context) const {
             fleet->MoveTo(destination);
 
             // also move ships of fleet
-            for (auto& ship : objects.find<Ship>(fleet->ShipIDs())) {
+            for (auto* ship : objects.findRaw<Ship>(fleet->ShipIDs())) {
                 if (old_sys)
                     old_sys->Remove(ship->ID());
                 ship->SetSystem(INVALID_OBJECT_ID);
@@ -2901,7 +2969,7 @@ void MoveTo::Execute(ScriptingContext& context) const {
             // if destination object is a fleet or is part of a fleet, can use
             // that fleet's previous and next systems to get valid next and
             // previous systems for the target fleet.
-            if (auto dest_fleet = get_fleet(destination.get(), objects)) {
+            if (auto dest_fleet = get_fleet(destination, objects)) {
                 UpdateFleetRoute(fleet, dest_fleet->NextSystemID(), dest_fleet->PreviousSystemID(), context);
 
             } else {
@@ -2912,11 +2980,11 @@ void MoveTo::Execute(ScriptingContext& context) const {
         }
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_SHIP) {
-        auto ship = std::static_pointer_cast<Ship>(context.effect_target);
+        auto ship = static_cast<Ship*>(context.effect_target);
         // TODO: make sure colonization doesn't interfere with this effect, and vice versa
 
         // is destination a ship/fleet ?
-        auto dest_fleet = get_fleet(destination.get(), objects);
+        auto dest_fleet = get_fleet(destination, objects);
         if (dest_fleet)
             if (dest_fleet->ID() == ship->FleetID())
                 return; // already in destination fleet. nothing to do.
@@ -2936,9 +3004,9 @@ void MoveTo::Execute(ScriptingContext& context) const {
                 ship->SetSystem(INVALID_OBJECT_ID);
             }
 
-            if (auto new_sys = objects.get<System>(dest_sys_id)) {
+            if (auto new_sys = objects.getRaw<System>(dest_sys_id)) {
                 // ship is moving to a new system. insert it.
-                new_sys->Insert(ship);
+                new_sys->Insert(ship, System::NO_ORBIT, context.current_turn, context.ContextObjects());
             } else {
                 // ship is moving to a non-system location. move it there.
                 ship->MoveTo(dest_fleet);
@@ -2947,7 +3015,7 @@ void MoveTo::Execute(ScriptingContext& context) const {
             // may create a fleet for ship below...
         }
 
-        auto old_fleet = objects.get<Fleet>(ship->FleetID());
+        auto old_fleet = objects.getRaw<Fleet>(ship->FleetID());
 
         if (dest_fleet && same_owners) {
             // ship is moving to a different fleet owned by the same empire, so
@@ -2973,14 +3041,14 @@ void MoveTo::Execute(ScriptingContext& context) const {
             // if ship is armed use old fleet's aggression. otherwise use auto-determined aggression
             auto aggr = old_fleet && ship->IsArmed(context) ? old_fleet->Aggression() : FleetAggression::INVALID_FLEET_AGGRESSION;
 
-            if (auto dest_system = objects.get<System>(dest_sys_id)) {
+            if (auto dest_system = objects.getRaw<System>(dest_sys_id)) {
                 // creates new fleet, inserts fleet into system and ship into fleet
-                CreateNewFleet(std::move(dest_system), ship, context, aggr);
-                ExploreSystem(dest_sys_id, ship, context);
+                CreateNewFleet(dest_system, ship, context, aggr);
+                ExploreSystem(dest_sys_id, ship->Owner(), context);
 
             } else {
                 // creates new fleet and inserts ship into fleet
-                CreateNewFleet(destination->X(), destination->Y(), std::move(ship), context, aggr);
+                CreateNewFleet(destination->X(), destination->Y(), ship, context, aggr);
             }
         }
 
@@ -2990,10 +3058,10 @@ void MoveTo::Execute(ScriptingContext& context) const {
         }
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_PLANET) {
-        auto planet = std::static_pointer_cast<Planet>(context.effect_target);
+        auto planet = static_cast<Planet*>(context.effect_target);
         // planets need to be located in systems, so get system that contains destination object
 
-        auto dest_system = objects.get<System>(destination->SystemID());
+        auto dest_system = objects.getRaw<System>(destination->SystemID());
         if (!dest_system)
             return; // can't move a planet to a non-system
 
@@ -3005,35 +3073,35 @@ void MoveTo::Execute(ScriptingContext& context) const {
 
         if (old_sys)
             old_sys->Remove(planet->ID());
-        dest_system->Insert(planet);  // let system pick an orbit
+        dest_system->Insert(planet, System::NO_ORBIT, context.current_turn, objects); // let system pick an orbit
 
         // also insert buildings of planet into system.
-        for (auto& building : objects.find<Building>(planet->BuildingIDs())) {
+        for (auto* building : objects.findRaw<Building>(planet->BuildingIDs())) {
             if (old_sys)
                 old_sys->Remove(building->ID());
-            dest_system->Insert(std::move(building));
+            dest_system->Insert(building, System::NO_ORBIT, context.current_turn, objects);
         }
 
         // buildings planet should be unchanged by move, as should planet's
         // records of its buildings
 
-        ExploreSystem(dest_system->ID(), planet, context);
+        ExploreSystem(dest_system->ID(), planet->Owner(), context);
 
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_BUILDING) {
-        auto building = std::static_pointer_cast<Building>(context.effect_target);
+        auto building = static_cast<Building*>(context.effect_target);
         // buildings need to be located on planets, so if destination is a
         // planet, insert building into it, or attempt to get the planet on
         // which the destination object is located and insert target building
         // into that
-        auto* dest_planet = get_planet(destination.get(), objects);
+        auto* dest_planet = get_planet(destination, objects);
         if (!dest_planet)
             return;
 
         if (dest_planet->ID() == building->PlanetID())
             return; // nothing to do
 
-        auto dest_system = objects.get<System>(destination->SystemID());
+        auto dest_system = objects.getRaw<System>(destination->SystemID());
         if (!dest_system)
             return;
 
@@ -3042,18 +3110,18 @@ void MoveTo::Execute(ScriptingContext& context) const {
             old_sys->Remove(building->ID());
         building->SetSystem(INVALID_OBJECT_ID);
 
-        if (auto old_planet = objects.get<Planet>(building->PlanetID()))
+        if (auto old_planet = objects.getRaw<Planet>(building->PlanetID()))
             old_planet->RemoveBuilding(building->ID());
 
         dest_planet->AddBuilding(building->ID());
         building->SetPlanetID(dest_planet->ID());
 
-        dest_system->Insert(building);
-        ExploreSystem(dest_system->ID(), building, context);
+        dest_system->Insert(building, System::NO_ORBIT, context.current_turn, objects);
+        ExploreSystem(dest_system->ID(), building->Owner(), context);
 
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_SYSTEM) {
-        auto system = std::static_pointer_cast<System>(context.effect_target);
+        auto system = static_cast<System*>(context.effect_target);
         if (destination->SystemID() != INVALID_OBJECT_ID) {
             // TODO: merge systems ... ?
             return;
@@ -3064,34 +3132,34 @@ void MoveTo::Execute(ScriptingContext& context) const {
         system->MoveTo(destination);
 
         if (destination->ObjectType() == UniverseObjectType::OBJ_FIELD)
-            system->Insert(destination);
+            system->Insert(destination, System::NO_ORBIT, context.current_turn, objects);
 
         // find fleets / ships at destination location and insert into system
-        for (auto& obj : objects.all<Fleet>()) {
+        for (auto* obj : objects.allRaw<Fleet>()) {
             if (obj->X() == system->X() && obj->Y() == system->Y())
-                system->Insert(obj);
+                system->Insert(obj, System::NO_ORBIT, context.current_turn, objects);
         }
 
-        for (auto& obj : objects.all<Ship>()) {
+        for (auto* obj : objects.allRaw<Ship>()) {
             if (obj->X() == system->X() && obj->Y() == system->Y())
-                system->Insert(obj);
+                system->Insert(obj, System::NO_ORBIT, context.current_turn, objects);
         }
 
 
     } else if (context.effect_target->ObjectType() == UniverseObjectType::OBJ_FIELD) {
-        auto field = std::static_pointer_cast<Field>(context.effect_target);
+        auto field = static_cast<Field*>(context.effect_target);
         if (old_sys)
             old_sys->Remove(field->ID());
         field->SetSystem(INVALID_OBJECT_ID);
         field->MoveTo(destination);
         if (destination->ObjectType() == UniverseObjectType::OBJ_SYSTEM) {
-            auto dest_system = std::static_pointer_cast<System>(destination);
-            dest_system->Insert(std::move(field));
+            auto dest_system = static_cast<System*>(destination);
+            dest_system->Insert(field, System::NO_ORBIT, context.current_turn, objects);
         }
     }
 }
 
-std::string MoveTo::Dump(unsigned short ntabs) const
+std::string MoveTo::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "MoveTo destination = " + m_location_condition->Dump(ntabs) + "\n"; }
 
 void MoveTo::SetTopLevelContent(const std::string& content_name) {
@@ -3099,8 +3167,8 @@ void MoveTo::SetTopLevelContent(const std::string& content_name) {
         m_location_condition->SetTopLevelContent(content_name);
 }
 
-unsigned int MoveTo::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t MoveTo::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "MoveTo");
     CheckSums::CheckSumCombine(retval, m_location_condition);
@@ -3123,8 +3191,8 @@ MoveInOrbit::MoveInOrbit(std::unique_ptr<ValueRef::ValueRef<double>>&& speed,
 {}
 
 MoveInOrbit::MoveInOrbit(std::unique_ptr<ValueRef::ValueRef<double>>&& speed,
-                         std::unique_ptr<ValueRef::ValueRef<double>>&& focus_x/* = 0*/,
-                         std::unique_ptr<ValueRef::ValueRef<double>>&& focus_y/* = 0*/) :
+                         std::unique_ptr<ValueRef::ValueRef<double>>&& focus_x,
+                         std::unique_ptr<ValueRef::ValueRef<double>>&& focus_y) :
     m_speed(std::move(speed)),
     m_focus_x(std::move(focus_x)),
     m_focus_y(std::move(focus_y))
@@ -3135,17 +3203,17 @@ void MoveInOrbit::Execute(ScriptingContext& context) const {
         ErrorLogger(effects) << "MoveInOrbit::Execute given no target object";
         return;
     }
-    auto& target = context.effect_target;
+    auto* target = context.effect_target;
 
     double focus_x = 0.0, focus_y = 0.0, speed = 1.0;
     if (m_focus_x) {
-        ScriptingContext::CurrentValueVariant cvv{target->X()};
-        ScriptingContext x_context{context, cvv};
+        const ScriptingContext::CurrentValueVariant cvv{target->X()};
+        const ScriptingContext x_context{context, cvv};
         focus_x = m_focus_x->Eval(x_context);
     }
     if (m_focus_y) {
-        ScriptingContext::CurrentValueVariant cvv{target->Y()};
-        ScriptingContext y_context{context, cvv};
+        const ScriptingContext::CurrentValueVariant cvv{target->Y()};
+        const ScriptingContext y_context{context, cvv};
         focus_y = m_focus_y->Eval(y_context);
     }
     if (m_speed)
@@ -3153,11 +3221,10 @@ void MoveInOrbit::Execute(ScriptingContext& context) const {
     if (speed == 0.0)
         return;
     if (m_focal_point_condition) {
-        Condition::ObjectSet matches;
-        m_focal_point_condition->Eval(context, matches);
+        Condition::ObjectSet matches = m_focal_point_condition->Eval(std::as_const(context));
         if (matches.empty())
             return;
-        const auto& focus_object = *matches.begin();
+        const auto* focus_object = matches.front();
         focus_x = focus_object->X();
         focus_y = focus_object->Y();
     }
@@ -3179,20 +3246,20 @@ void MoveInOrbit::Execute(ScriptingContext& context) const {
     if (target->X() == new_x && target->Y() == new_y)
         return;
 
-    auto old_sys = context.ContextObjects().get<System>(target->SystemID());
+    auto old_sys = context.ContextObjects().getRaw<System>(target->SystemID());
 
-    if (auto system = std::dynamic_pointer_cast<System>(target)) {
+    if (auto system = dynamic_cast<System*>(target)) {
         system->MoveTo(new_x, new_y);
         return;
 
-    } else if (auto fleet = std::dynamic_pointer_cast<Fleet>(target)) {
+    } else if (auto fleet = dynamic_cast<Fleet*>(target)) {
         if (old_sys)
             old_sys->Remove(fleet->ID());
         fleet->SetSystem(INVALID_OBJECT_ID);
         fleet->MoveTo(new_x, new_y);
         UpdateFleetRoute(fleet, INVALID_OBJECT_ID, INVALID_OBJECT_ID, context);
 
-        for (auto& ship : context.ContextObjects().find<Ship>(fleet->ShipIDs())) {
+        for (auto* ship : context.ContextObjects().findRaw<Ship>(fleet->ShipIDs())) {
             if (old_sys)
                 old_sys->Remove(ship->ID());
             ship->SetSystem(INVALID_OBJECT_ID);
@@ -3200,12 +3267,12 @@ void MoveInOrbit::Execute(ScriptingContext& context) const {
         }
         return;
 
-    } else if (auto ship = std::dynamic_pointer_cast<Ship>(target)) {
+    } else if (auto ship = dynamic_cast<Ship*>(target)) {
         if (old_sys)
             old_sys->Remove(ship->ID());
         ship->SetSystem(INVALID_OBJECT_ID);
 
-        auto old_fleet = context.ContextObjects().get<Fleet>(ship->FleetID());
+        auto old_fleet = context.ContextObjects().getRaw<Fleet>(ship->FleetID());
         if (old_fleet) {
             old_fleet->RemoveShips({ship->ID()});
             if (old_fleet->Empty()) {
@@ -3221,7 +3288,7 @@ void MoveInOrbit::Execute(ScriptingContext& context) const {
         CreateNewFleet(new_x, new_y, ship, context);
         return;
 
-    } else if (auto field = std::dynamic_pointer_cast<Field>(target)) {
+    } else if (auto field = dynamic_cast<Field*>(target)) {
         if (old_sys)
             old_sys->Remove(field->ID());
         field->SetSystem(INVALID_OBJECT_ID);
@@ -3230,7 +3297,7 @@ void MoveInOrbit::Execute(ScriptingContext& context) const {
     // don't move planets or buildings, as these can't exist outside of systems
 }
 
-std::string MoveInOrbit::Dump(unsigned short ntabs) const {
+std::string MoveInOrbit::Dump(uint8_t ntabs) const {
     if (m_focal_point_condition)
         return DumpIndent(ntabs) + "MoveInOrbit around = " + m_focal_point_condition->Dump(ntabs) + "\n";
     else if (m_focus_x && m_focus_y)
@@ -3250,8 +3317,8 @@ void MoveInOrbit::SetTopLevelContent(const std::string& content_name) {
         m_focus_y->SetTopLevelContent(content_name);
 }
 
-unsigned int MoveInOrbit::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t MoveInOrbit::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "MoveInOrbit");
     CheckSums::CheckSumCombine(retval, m_speed);
@@ -3282,8 +3349,8 @@ MoveTowards::MoveTowards(std::unique_ptr<ValueRef::ValueRef<double>>&& speed,
 {}
 
 MoveTowards::MoveTowards(std::unique_ptr<ValueRef::ValueRef<double>>&& speed,
-                         std::unique_ptr<ValueRef::ValueRef<double>>&& dest_x/* = 0*/,
-                         std::unique_ptr<ValueRef::ValueRef<double>>&& dest_y/* = 0*/) :
+                         std::unique_ptr<ValueRef::ValueRef<double>>&& dest_x,
+                         std::unique_ptr<ValueRef::ValueRef<double>>&& dest_y) :
     m_speed(std::move(speed)),
     m_dest_x(std::move(dest_x)),
     m_dest_y(std::move(dest_y))
@@ -3294,17 +3361,17 @@ void MoveTowards::Execute(ScriptingContext& context) const {
         ErrorLogger(effects) << "MoveTowards::Execute given no target object";
         return;
     }
-    auto& target = context.effect_target;
+    auto target = context.effect_target;
 
     double dest_x = 0.0, dest_y = 0.0, speed = 1.0;
     if (m_dest_x) {
-        ScriptingContext::CurrentValueVariant cvv{target->X()};
-        ScriptingContext x_context{context, cvv};
+        const ScriptingContext::CurrentValueVariant cvv{target->X()};
+        const ScriptingContext x_context{context, cvv};
         dest_x = m_dest_x->Eval(x_context);
     }
     if (m_dest_y) {
-        ScriptingContext::CurrentValueVariant cvv{target->Y()};
-        ScriptingContext y_context{context, cvv};
+        const ScriptingContext::CurrentValueVariant cvv{target->Y()};
+        const ScriptingContext y_context{context, cvv};
         dest_y = m_dest_y->Eval(y_context);
     }
     if (m_speed)
@@ -3312,11 +3379,10 @@ void MoveTowards::Execute(ScriptingContext& context) const {
     if (speed == 0.0)
         return;
     if (m_dest_condition) {
-        Condition::ObjectSet matches;
-        m_dest_condition->Eval(context, matches);
+        Condition::ObjectSet matches = m_dest_condition->Eval(std::as_const(context));
         if (matches.empty())
             return;
-        std::shared_ptr<const UniverseObject> focus_object = *matches.begin();
+        auto focus_object = matches.front();
         dest_x = focus_object->X();
         dest_y = focus_object->Y();
     }
@@ -3344,22 +3410,22 @@ void MoveTowards::Execute(ScriptingContext& context) const {
     if (target->X() == new_x && target->Y() == new_y)
         return; // nothing to do
 
-    if (auto system = std::dynamic_pointer_cast<System>(target)) {
+    if (auto* system = dynamic_cast<System*>(target)) {
         system->MoveTo(new_x, new_y);
-        for (auto& obj : context.ContextObjects().find<UniverseObject>(system->ObjectIDs()))
+        for (auto* obj : context.ContextObjects().findRaw<UniverseObject>(system->ObjectIDs()))
             obj->MoveTo(new_x, new_y);
 
         // don't need to remove objects from system or insert into it, as all
         // contained objects in system are moved with it, maintaining their
         // containment situation
 
-    } else if (auto fleet = std::dynamic_pointer_cast<Fleet>(target)) {
-        auto old_sys = context.ContextObjects().get<System>(fleet->SystemID());
+    } else if (auto* fleet = dynamic_cast<Fleet*>(target)) {
+        auto old_sys = context.ContextObjects().getRaw<System>(fleet->SystemID());
         if (old_sys)
             old_sys->Remove(fleet->ID());
         fleet->SetSystem(INVALID_OBJECT_ID);
         fleet->MoveTo(new_x, new_y);
-        for (auto& ship : context.ContextObjects().find<Ship>(fleet->ShipIDs())) {
+        for (auto* ship : context.ContextObjects().findRaw<Ship>(fleet->ShipIDs())) {
             if (old_sys)
                 old_sys->Remove(ship->ID());
             ship->SetSystem(INVALID_OBJECT_ID);
@@ -3369,13 +3435,13 @@ void MoveTowards::Execute(ScriptingContext& context) const {
         // todo: is fleet now close enough to fall into a system?
         UpdateFleetRoute(fleet, INVALID_OBJECT_ID, INVALID_OBJECT_ID, context);
 
-    } else if (auto ship = std::dynamic_pointer_cast<Ship>(target)) {
-        auto old_sys = context.ContextObjects().get<System>(ship->SystemID());
+    } else if (auto* ship = dynamic_cast<Ship*>(target)) {
+        auto old_sys = context.ContextObjects().getRaw<System>(ship->SystemID());
         if (old_sys)
             old_sys->Remove(ship->ID());
         ship->SetSystem(INVALID_OBJECT_ID);
 
-        auto old_fleet = context.ContextObjects().get<Fleet>(ship->FleetID());
+        auto old_fleet = context.ContextObjects().getRaw<Fleet>(ship->FleetID());
         FleetAggression old_fleet_aggr = FleetAggression::INVALID_FLEET_AGGRESSION;
         if (old_fleet) {
             old_fleet_aggr = old_fleet->Aggression();
@@ -3393,8 +3459,8 @@ void MoveTowards::Execute(ScriptingContext& context) const {
             context.ContextUniverse().EffectDestroy(old_fleet->ID(), INVALID_OBJECT_ID);    // no object in particular destroyed this fleet
         }
 
-    } else if (auto field = std::dynamic_pointer_cast<Field>(target)) {
-        auto old_sys = context.ContextObjects().get<System>(field->SystemID());
+    } else if (auto* field = dynamic_cast<Field*>(target)) {
+        auto old_sys = context.ContextObjects().getRaw<System>(field->SystemID());
         if (old_sys)
             old_sys->Remove(field->ID());
         field->SetSystem(INVALID_OBJECT_ID);
@@ -3404,7 +3470,7 @@ void MoveTowards::Execute(ScriptingContext& context) const {
     // don't move planets or buildings, as these can't exist outside of systems
 }
 
-std::string MoveTowards::Dump(unsigned short ntabs) const {
+std::string MoveTowards::Dump(uint8_t ntabs) const {
     if (m_dest_condition)
         return DumpIndent(ntabs) + "MoveTowards destination = " + m_dest_condition->Dump(ntabs) + "\n";
     else if (m_dest_x && m_dest_y)
@@ -3424,8 +3490,8 @@ void MoveTowards::SetTopLevelContent(const std::string& content_name) {
         m_dest_y->SetTopLevelContent(content_name);
 }
 
-unsigned int MoveTowards::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t MoveTowards::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "MoveTowards");
     CheckSums::CheckSumCombine(retval, m_speed);
@@ -3459,15 +3525,14 @@ void SetDestination::Execute(ScriptingContext& context) const {
         return;
     }
 
-    auto target_fleet = std::dynamic_pointer_cast<Fleet>(context.effect_target);
+    auto target_fleet = dynamic_cast<Fleet*>(context.effect_target);
     if (!target_fleet) {
         ErrorLogger(effects) << "SetDestination::Execute acting on non-fleet target:" << context.effect_target->Dump();
         return;
     }
 
-    Condition::ObjectSet valid_locations;
     // apply location condition to determine valid location to move target to
-    m_location_condition->Eval(context, valid_locations);
+    TargetSet valid_locations = m_location_condition->Eval(context);
 
     // early exit if there are no valid locations - can't move anything if there's nowhere to move to
     if (valid_locations.empty())
@@ -3475,8 +3540,7 @@ void SetDestination::Execute(ScriptingContext& context) const {
 
     // "randomly" pick a destination
     int destination_idx = RandInt(0, valid_locations.size() - 1);
-    auto destination = std::const_pointer_cast<UniverseObject>(
-        *std::next(valid_locations.begin(), destination_idx));
+    auto destination = valid_locations[destination_idx];
     int destination_system_id = destination->SystemID();
 
     // early exit if destination is not / in a system
@@ -3491,9 +3555,8 @@ void SetDestination::Execute(ScriptingContext& context) const {
         return;
 
     // find shortest path for fleet's owner
-    auto [route_list, ignored_length] = context.ContextUniverse().GetPathfinder()->ShortestPath(
-        start_system_id, destination_system_id, target_fleet->Owner(), context.ContextObjects());
-    (void)ignored_length; // suppress ignored variable warning
+    auto route_list = context.ContextUniverse().GetPathfinder().ShortestPath(
+        start_system_id, destination_system_id, target_fleet->Owner(), context.ContextObjects()).first;
 
     // reject empty move paths (no path exists).
     if (route_list.empty())
@@ -3505,13 +3568,13 @@ void SetDestination::Execute(ScriptingContext& context) const {
         return;
 
     try {
-        target_fleet->SetRoute(route_list, context.ContextObjects());
+        target_fleet->SetRoute(std::move(route_list), context.ContextObjects());
     } catch (const std::exception& e) {
         ErrorLogger(effects) << "Caught exception in Effect::SetDestination setting fleet route: " << e.what();
     }
 }
 
-std::string SetDestination::Dump(unsigned short ntabs) const
+std::string SetDestination::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetDestination destination = " + m_location_condition->Dump(ntabs) + "\n"; }
 
 void SetDestination::SetTopLevelContent(const std::string& content_name) {
@@ -3519,8 +3582,8 @@ void SetDestination::SetTopLevelContent(const std::string& content_name) {
         m_location_condition->SetTopLevelContent(content_name);
 }
 
-unsigned int SetDestination::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetDestination::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetDestination");
     CheckSums::CheckSumCombine(retval, m_location_condition);
@@ -3550,11 +3613,11 @@ void SetAggression::Execute(ScriptingContext& context) const {
         return;
     }
 
-    auto target_fleet = std::static_pointer_cast<Fleet>(context.effect_target);
+    auto target_fleet = static_cast<Fleet*>(context.effect_target);
     target_fleet->SetAggression(m_aggression);
 }
 
-std::string SetAggression::Dump(unsigned short ntabs) const {
+std::string SetAggression::Dump(uint8_t ntabs) const {
     return DumpIndent(ntabs) + [aggr{this->m_aggression}]() {
         switch(aggr) {
         case FleetAggression::FLEET_AGGRESSIVE:  return "SetAggressive";  break;
@@ -3566,8 +3629,8 @@ std::string SetAggression::Dump(unsigned short ntabs) const {
     }();
 }
 
-unsigned int SetAggression::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetAggression::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetAggression");
     CheckSums::CheckSumCombine(retval, m_aggression);
@@ -3583,7 +3646,7 @@ std::unique_ptr<Effect> SetAggression::Clone() const
 ///////////////////////////////////////////////////////////
 // Victory                                               //
 ///////////////////////////////////////////////////////////
-Victory::Victory(std::string& reason_string) :
+Victory::Victory(std::string reason_string) :
     m_reason_string(std::move(reason_string))
 {}
 
@@ -3593,16 +3656,16 @@ void Victory::Execute(ScriptingContext& context) const {
         return;
     }
     if (auto empire = context.GetEmpire(context.effect_target->Owner()))
-        empire->Win(m_reason_string, context.Empires().GetEmpires());
+        empire->Win(m_reason_string, context.Empires().GetEmpires(), context.current_turn);
     else
         ErrorLogger(effects) << "Trying to grant victory to a missing empire!";
 }
 
-std::string Victory::Dump(unsigned short ntabs) const
+std::string Victory::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "Victory reason = \"" + m_reason_string + "\"\n"; }
 
-unsigned int Victory::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t Victory::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "Victory");
     CheckSums::CheckSumCombine(retval, m_reason_string);
@@ -3611,10 +3674,8 @@ unsigned int Victory::GetCheckSum() const {
     return retval;
 }
 
-std::unique_ptr<Effect> Victory::Clone() const {
-    auto reason_string = m_reason_string;
-    return std::make_unique<Victory>(reason_string);
-}
+std::unique_ptr<Effect> Victory::Clone() const
+{ return std::make_unique<Victory>(m_reason_string); }
 
 
 ///////////////////////////////////////////////////////////
@@ -3622,7 +3683,7 @@ std::unique_ptr<Effect> Victory::Clone() const {
 ///////////////////////////////////////////////////////////
 SetEmpireTechProgress::SetEmpireTechProgress(std::unique_ptr<ValueRef::ValueRef<std::string>>&& tech_name,
                                              std::unique_ptr<ValueRef::ValueRef<double>>&& research_progress,
-                                             std::unique_ptr<ValueRef::ValueRef<int>>&& empire_id /*= nullptr*/) :
+                                             std::unique_ptr<ValueRef::ValueRef<int>>&& empire_id) :
     m_tech_name(std::move(tech_name)),
     m_research_progress(std::move(research_progress)),
     m_empire_id(
@@ -3650,13 +3711,12 @@ void SetEmpireTechProgress::Execute(ScriptingContext& context) const {
         return;
     }
 
-    ScriptingContext::CurrentValueVariant cvv{empire->ResearchProgress(tech_name, context)};
-    ScriptingContext progress_context{context, cvv};
-    empire->SetTechResearchProgress(tech_name, m_research_progress->Eval(progress_context),
-                                    context);
+    const ScriptingContext::CurrentValueVariant cvv{empire->ResearchProgress(tech_name, context)};
+    const ScriptingContext progress_context{context, cvv};
+    empire->SetTechResearchProgress(tech_name, m_research_progress->Eval(progress_context), context);
 }
 
-std::string SetEmpireTechProgress::Dump(unsigned short ntabs) const {
+std::string SetEmpireTechProgress::Dump(uint8_t ntabs) const {
     std::string retval = "SetEmpireTechProgress name = ";
     if (m_tech_name)
         retval += m_tech_name->Dump(ntabs);
@@ -3676,8 +3736,8 @@ void SetEmpireTechProgress::SetTopLevelContent(const std::string& content_name) 
         m_empire_id->SetTopLevelContent(content_name);
 }
 
-unsigned int SetEmpireTechProgress::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetEmpireTechProgress::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetEmpireTechProgress");
     CheckSums::CheckSumCombine(retval, m_tech_name);
@@ -3703,43 +3763,38 @@ GiveEmpireContent::GiveEmpireContent(std::unique_ptr<ValueRef::ValueRef<std::str
                                      std::unique_ptr<ValueRef::ValueRef<int>>&& empire_id) :
     m_content_name(std::move(content_name)),
     m_unlock_type(unlock_type),
-    m_empire_id(std::move(empire_id))
-{
-    if (!m_empire_id)
-        m_empire_id.reset(new ValueRef::Variable<int>(ValueRef::ReferenceType::EFFECT_TARGET_REFERENCE, "Owner"));
-}
+    m_empire_id(empire_id ?
+                    std::move(empire_id) :
+                    std::make_unique<ValueRef::Variable<int>>(ValueRef::ReferenceType::EFFECT_TARGET_REFERENCE, "Owner")
+               )
+{}
 
 void GiveEmpireContent::Execute(ScriptingContext& context) const {
-    if (!m_empire_id) return;
+    if (!m_empire_id || !m_content_name) return;
     auto empire = context.GetEmpire(m_empire_id->Eval(context));
     if (!empire) return;
 
-    if (!m_content_name)
-        return;
-
-    std::string content_name = m_content_name->Eval(context);
-
     switch (m_unlock_type) {
-    case UnlockableItemType::UIT_BUILDING:  empire->AddBuildingType(content_name, context.current_turn); break;
-    case UnlockableItemType::UIT_SHIP_PART: empire->AddShipPart(content_name, context.current_turn);     break;
-    case UnlockableItemType::UIT_SHIP_HULL: empire->AddShipHull(content_name, context.current_turn);     break;
-    case UnlockableItemType::UIT_POLICY:    empire->AddPolicy(content_name, context.current_turn);       break;
+    case UnlockableItemType::UIT_BUILDING:  empire->AddBuildingType(m_content_name->Eval(context), context.current_turn); break;
+    case UnlockableItemType::UIT_SHIP_PART: empire->AddShipPart(m_content_name->Eval(context), context.current_turn);     break;
+    case UnlockableItemType::UIT_SHIP_HULL: empire->AddShipHull(m_content_name->Eval(context), context.current_turn);     break;
+    case UnlockableItemType::UIT_POLICY:    empire->AddPolicy(m_content_name->Eval(context), context.current_turn);       break;
     case UnlockableItemType::UIT_TECH: {
-        const Tech* tech = GetTech(content_name);
-        if (!tech) {
+        auto content_name = m_content_name->Eval(context);
+        if (!GetTech(content_name)) {
             ErrorLogger(effects) << "GiveEmpireContent::Execute couldn't get tech with name: " << content_name;
             return;
         }
-        empire->AddNewlyResearchedTechToGrantAtStartOfNextTurn(content_name);
+        empire->AddNewlyResearchedTechToGrantAtStartOfNextTurn(std::move(content_name));
         break;
     }
     default: {
-        ErrorLogger(effects) << "GiveEmpireContent::Execute given invalid unlockable item type";
+        ErrorLogger(effects) << "GiveEmpireContent::Execute given invalid unlockable item type: " << to_string(m_unlock_type);
     }
     }
 }
 
-std::string GiveEmpireContent::Dump(unsigned short ntabs) const {
+std::string GiveEmpireContent::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "GiveEmpire";
 
     switch(m_unlock_type) {
@@ -3768,8 +3823,8 @@ void GiveEmpireContent::SetTopLevelContent(const std::string& content_name) {
         m_content_name->SetTopLevelContent(content_name);
 }
 
-unsigned int GiveEmpireContent::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t GiveEmpireContent::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "GiveEmpireContent");
     CheckSums::CheckSumCombine(retval, m_content_name);
@@ -3790,8 +3845,8 @@ std::unique_ptr<Effect> GiveEmpireContent::Clone() const {
 ///////////////////////////////////////////////////////////
 // GenerateSitRepMessage                                 //
 ///////////////////////////////////////////////////////////
-GenerateSitRepMessage::GenerateSitRepMessage(std::string& message_string,
-                                             std::string& icon,
+GenerateSitRepMessage::GenerateSitRepMessage(std::string message_string,
+                                             std::string icon,
                                              MessageParams&& message_parameters,
                                              std::unique_ptr<ValueRef::ValueRef<int>>&& recipient_empire_id,
                                              EmpireAffiliationType affiliation,
@@ -3806,8 +3861,8 @@ GenerateSitRepMessage::GenerateSitRepMessage(std::string& message_string,
     m_stringtable_lookup(stringtable_lookup)
 {}
 
-GenerateSitRepMessage::GenerateSitRepMessage(std::string& message_string,
-                                             std::string& icon,
+GenerateSitRepMessage::GenerateSitRepMessage(std::string message_string,
+                                             std::string icon,
                                              MessageParams&& message_parameters,
                                              EmpireAffiliationType affiliation,
                                              std::unique_ptr<Condition::Condition>&& condition,
@@ -3822,11 +3877,12 @@ GenerateSitRepMessage::GenerateSitRepMessage(std::string& message_string,
     m_stringtable_lookup(stringtable_lookup)
 {}
 
-GenerateSitRepMessage::GenerateSitRepMessage(std::string& message_string, std::string& icon,
+GenerateSitRepMessage::GenerateSitRepMessage(std::string message_string,
+                                             std::string icon,
                                              MessageParams&& message_parameters,
                                              EmpireAffiliationType affiliation,
                                              std::string label,
-                                             bool stringtable_lookup):
+                                             bool stringtable_lookup) :
     m_message_string(std::move(message_string)),
     m_icon(std::move(icon)),
     m_message_parameters(std::move(message_parameters)),
@@ -3836,9 +3892,7 @@ GenerateSitRepMessage::GenerateSitRepMessage(std::string& message_string, std::s
 {}
 
 void GenerateSitRepMessage::Execute(ScriptingContext& context) const {
-    int recipient_id = ALL_EMPIRES;
-    if (m_recipient_empire_id)
-        recipient_id = m_recipient_empire_id->Eval(context);
+    const int recipient_id = m_recipient_empire_id ? m_recipient_empire_id->Eval(context) : ALL_EMPIRES;
 
     // track any ship designs used in message, which any recipients must be
     // made aware of so sitrep won't have errors
@@ -3865,6 +3919,10 @@ void GenerateSitRepMessage::Execute(ScriptingContext& context) const {
         parameter_tag_values.emplace_back(param_tag, std::move(param_val));
     }
 
+    const auto not_recipient = [recipient_id](const auto empire_id) { return recipient_id != empire_id; };
+    const auto to_id_status = [&context, recipient_id](const auto empire_id)
+    { return std::pair(empire_id, context.ContextDiploStatus(recipient_id, empire_id)); };
+
     // whom to send to?
     std::set<int> recipient_empire_ids;
     switch (m_affiliation) {
@@ -3876,64 +3934,66 @@ void GenerateSitRepMessage::Execute(ScriptingContext& context) const {
     }
 
     case EmpireAffiliationType::AFFIL_ALLY: {
-        // add allies of specified empire
-        for ([[maybe_unused]] auto& [empire_id, ignored_empire] : context.Empires()) {
-            (void)ignored_empire; // quiet unused variable warnings
-            if (empire_id == recipient_id || recipient_id == ALL_EMPIRES)
-                continue;
+        static constexpr auto are_allied = [](const auto& id_status)
+        { return id_status.second >= DiplomaticStatus::DIPLO_ALLIED; };
 
-            DiplomaticStatus status = context.ContextDiploStatus(recipient_id, empire_id);
-            if (status >= DiplomaticStatus::DIPLO_ALLIED)
-                recipient_empire_ids.insert(empire_id);
+        // add allies of specified empire
+        if (recipient_id != ALL_EMPIRES) {
+            auto allies_rng = context.EmpireIDs() | range_filter(not_recipient)
+                | range_transform(to_id_status) | range_filter(are_allied) | range_keys;
+            recipient_empire_ids.insert(allies_rng.begin(), allies_rng.end());
         }
         break;
     }
 
     case EmpireAffiliationType::AFFIL_PEACE: {
-        // add empires at peace with the specified empire
-        for ([[maybe_unused]] auto& [empire_id, ignored_empire] : context.Empires()) {
-            (void)ignored_empire;
-            if (empire_id == recipient_id || recipient_id == ALL_EMPIRES)
-                continue;
+        static constexpr auto are_peacy = [](const auto& id_status)
+        { return id_status.second >= DiplomaticStatus::DIPLO_PEACE; };
 
-            DiplomaticStatus status = context.ContextDiploStatus(recipient_id, empire_id);
-            if (status == DiplomaticStatus::DIPLO_PEACE)
-                recipient_empire_ids.insert(empire_id);
+        // add empires at peace with the specified empire
+        if (recipient_id != ALL_EMPIRES) {
+            auto peacey_rng = context.EmpireIDs() | range_filter(not_recipient)
+                | range_transform(to_id_status) | range_filter(are_peacy) | range_keys;
+            recipient_empire_ids.insert(peacey_rng.begin(), peacey_rng.end());
         }
         break;
     }
 
     case EmpireAffiliationType::AFFIL_ENEMY: {
-        // add enemies of specified empire
-        for ([[maybe_unused]] auto& [empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire; // quiet unused variable warning
-            if (empire_id == recipient_id || recipient_id == ALL_EMPIRES)
-                continue;
+        static constexpr auto are_warring = [](const auto& id_status)
+        { return id_status.second == DiplomaticStatus::DIPLO_WAR; };
 
-            DiplomaticStatus status = context.ContextDiploStatus(recipient_id, empire_id);
-            if (status == DiplomaticStatus::DIPLO_WAR)
-                recipient_empire_ids.insert(empire_id);
+        // add enemies of specified empire
+        if (recipient_id != ALL_EMPIRES) {
+            auto warring_rng = context.EmpireIDs() | range_filter(not_recipient)
+                | range_transform(to_id_status) | range_filter(are_warring) | range_keys;
+            recipient_empire_ids.insert(warring_rng.begin(), warring_rng.end());
         }
         break;
     }
 
     case EmpireAffiliationType::AFFIL_CAN_SEE: {
-        // evaluate condition
-        Condition::ObjectSet condition_matches;
-        if (m_condition)
-            m_condition->Eval(context, condition_matches);
+        if (!m_condition)
+            break;
+        const auto objs = m_condition->Eval(std::as_const(context)); // TODO: use lazy condition evaluation
+        const auto obj_ids_rng = objs | range_transform([](const auto* obj) { return obj->ID(); });
+        const auto& eov = context.empire_object_vis;
+
+        // can an empire see an object that matches the condition?
+        const auto can_see_any_obj_id = [obj_ids_rng, &eov](const auto empire_id) {
+            const auto eov_it = eov.find(empire_id);
+            if (eov_it == eov.end())
+                return false;
+            const auto can_see_obj_id = [&ov{eov_it->second}](const auto obj_id) {
+                const auto ov_it = ov.find(obj_id);
+                return ov_it != ov.end() && ov_it->second >= Visibility::VIS_BASIC_VISIBILITY;
+            };
+            return range_any_of(obj_ids_rng, can_see_obj_id);
+        };
 
         // add empires that can see any condition-matching object
-        for ([[maybe_unused]] auto& [empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire;
-            for (auto& object : condition_matches) {
-                auto vis = context.ContextVis(object->ID(), empire_id);
-                if (vis >= Visibility::VIS_BASIC_VISIBILITY) {
-                    recipient_empire_ids.insert(empire_id);
-                    break; // can move to the next empire, since this one has seen a matching object
-                }
-            }
-        }
+        auto empires_that_can_see_something = context.EmpireIDs() | range_filter(can_see_any_obj_id);
+        recipient_empire_ids.insert(empires_that_can_see_something.begin(), empires_that_can_see_something.end());
         break;
     }
 
@@ -3948,15 +4008,13 @@ void GenerateSitRepMessage::Execute(ScriptingContext& context) const {
     case EmpireAffiliationType::AFFIL_ANY:
     default: {
         // add all empires
-        for ([[maybe_unused]] auto& [empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire; // quiet unused variable warning
-            recipient_empire_ids.insert(empire_id);
-        }
+        const auto& all_empires_rng = context.EmpireIDs();
+        recipient_empire_ids.insert(all_empires_rng.begin(), all_empires_rng.end());
         break;
     }
     }
 
-    int sitrep_turn = context.current_turn + 1;
+    const int sitrep_turn = context.current_turn + 1;
 
     // send to recipient empires
     for (int empire_id : recipient_empire_ids) {
@@ -3973,7 +4031,7 @@ void GenerateSitRepMessage::Execute(ScriptingContext& context) const {
     }
 }
 
-std::string GenerateSitRepMessage::Dump(unsigned short ntabs) const {
+std::string GenerateSitRepMessage::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs);
     retval += "GenerateSitRepMessage\n";
     retval += DumpIndent(ntabs+1) + "message = \"" + m_message_string + "\"" + " icon = " + m_icon + "\n";
@@ -4020,8 +4078,8 @@ void GenerateSitRepMessage::SetTopLevelContent(const std::string& content_name) 
         m_condition->SetTopLevelContent(content_name);
 }
 
-unsigned int GenerateSitRepMessage::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t GenerateSitRepMessage::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "GenerateSitRepMessage");
     CheckSums::CheckSumCombine(retval, m_message_string);
@@ -4047,10 +4105,8 @@ GenerateSitRepMessage::MessageParameters() const {
 }
 
 std::unique_ptr<Effect> GenerateSitRepMessage::Clone() const {
-    auto message_string = m_message_string;
-    auto icon = m_icon;
     auto retval = std::make_unique<GenerateSitRepMessage>(
-        message_string, icon, ValueRef::CloneUnique(m_message_parameters),
+        m_message_string, m_icon, ValueRef::CloneUnique(m_message_parameters),
         ValueRef::CloneUnique(m_recipient_empire_id), m_affiliation,
         m_label, m_stringtable_lookup);
     retval->m_condition = ValueRef::CloneUnique(m_condition);
@@ -4075,11 +4131,11 @@ void SetOverlayTexture::Execute(ScriptingContext& context) const {
     if (!context.effect_target || context.effect_target->ObjectType() != UniverseObjectType::OBJ_SYSTEM)
         return;
     double size = m_size ? m_size->Eval(context) : 1.0;
-    auto system = std::static_pointer_cast<System>(context.effect_target);
+    auto system = static_cast<System*>(context.effect_target);
     system->SetOverlayTexture(m_texture, size);
 }
 
-std::string SetOverlayTexture::Dump(unsigned short ntabs) const {
+std::string SetOverlayTexture::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "SetOverlayTexture texture = " + m_texture;
     if (m_size)
         retval += " size = " + m_size->Dump(ntabs);
@@ -4092,8 +4148,8 @@ void SetOverlayTexture::SetTopLevelContent(const std::string& content_name) {
         m_size->SetTopLevelContent(content_name);
 }
 
-unsigned int SetOverlayTexture::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetOverlayTexture::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetOverlayTexture");
     CheckSums::CheckSumCombine(retval, m_texture);
@@ -4104,31 +4160,26 @@ unsigned int SetOverlayTexture::GetCheckSum() const {
 }
 
 std::unique_ptr<Effect> SetOverlayTexture::Clone() const {
-    auto texture = m_texture;
-    return std::make_unique<SetOverlayTexture>(texture,
-                                               ValueRef::CloneUnique(m_size));
+    auto texture{m_texture};
+    return std::make_unique<SetOverlayTexture>(texture, ValueRef::CloneUnique(m_size));
 }
 
 
 ///////////////////////////////////////////////////////////
 // SetTexture                                            //
 ///////////////////////////////////////////////////////////
-SetTexture::SetTexture(std::string& texture) :
-    m_texture(std::move(texture))
-{}
-
 void SetTexture::Execute(ScriptingContext& context) const {
     if (!context.effect_target || context.effect_target->ObjectType() != UniverseObjectType::OBJ_PLANET)
         return;
-    auto planet = std::static_pointer_cast<Planet>(context.effect_target);
+    auto planet = static_cast<Planet*>(context.effect_target);
     planet->SetSurfaceTexture(m_texture);
 }
 
-std::string SetTexture::Dump(unsigned short ntabs) const
+std::string SetTexture::Dump(uint8_t ntabs) const
 { return DumpIndent(ntabs) + "SetTexture texture = " + m_texture + "\n"; }
 
-unsigned int SetTexture::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetTexture::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetTexture");
     CheckSums::CheckSumCombine(retval, m_texture);
@@ -4138,7 +4189,7 @@ unsigned int SetTexture::GetCheckSum() const {
 }
 
 std::unique_ptr<Effect> SetTexture::Clone() const {
-    auto texture = m_texture;
+    auto texture{m_texture};
     return std::make_unique<SetTexture>(texture);
 }
 
@@ -4160,63 +4211,64 @@ void SetVisibility::Execute(ScriptingContext& context) const {
     if (!context.effect_target)
         return;
 
-    // Note: currently ignoring upgrade-only flag
+    // Note: TODO: currently ignoring upgrade-only flag
 
     if (!m_vis)
         return; // nothing to evaluate!
 
-    int empire_id = ALL_EMPIRES;
-    if (m_empire_id)
-        empire_id = m_empire_id->Eval(context);
+    const int main_empire_id = m_empire_id ? m_empire_id->Eval(context) : ALL_EMPIRES;
+    const auto not_main_empire = [main_empire_id](const auto other_id) { return main_empire_id != other_id; };
+    const auto to_id_status = [&context, main_empire_id](const auto other_empire_id)
+    { return std::pair(other_empire_id, context.ContextDiploStatus(main_empire_id, other_empire_id)); };
+
 
     // whom to set visbility for?
-    std::set<int> empire_ids;
+    const auto all_empire_ids{context.EmpireIDs()};
+    std::vector<int> empire_ids;
+
     switch (m_affiliation) {
     case EmpireAffiliationType::AFFIL_SELF: {
         // add just specified empire
-        if (empire_id != ALL_EMPIRES)
-            empire_ids.insert(empire_id);
+        if (main_empire_id != ALL_EMPIRES)
+            empire_ids.push_back(main_empire_id);
         break;
     }
 
     case EmpireAffiliationType::AFFIL_ALLY: {
-        // add allies of specified empire
-        for ([[maybe_unused]] auto& [loop_empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire; // quiet unused variable warning
-            if (loop_empire_id == empire_id || empire_id == ALL_EMPIRES)
-                continue;
+        static constexpr auto are_allied = [](const auto& id_status)
+        { return id_status.second >= DiplomaticStatus::DIPLO_ALLIED; };
 
-            DiplomaticStatus status = context.ContextDiploStatus(empire_id, loop_empire_id);
-            if (status >= DiplomaticStatus::DIPLO_ALLIED)
-                empire_ids.insert(loop_empire_id);
+        // add allies of specified empire
+        if (main_empire_id != ALL_EMPIRES) {
+            auto allied_rng = all_empire_ids | range_filter(not_main_empire)
+                | range_transform(to_id_status) | range_filter(are_allied) | range_keys;
+            empire_ids.insert(empire_ids.end(), allied_rng.begin(), allied_rng.end());
         }
         break;
     }
 
     case EmpireAffiliationType::AFFIL_PEACE: {
-        // add empires at peace with the specified empire
-        for ([[maybe_unused]] auto& [loop_empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire; // quiet unused variable warning
-            if (loop_empire_id == empire_id || empire_id == ALL_EMPIRES)
-                continue;
+        static constexpr auto are_peacey = [](const auto& id_status)
+        { return id_status.second >= DiplomaticStatus::DIPLO_PEACE; };
 
-            DiplomaticStatus status = context.ContextDiploStatus(empire_id, loop_empire_id);
-            if (status == DiplomaticStatus::DIPLO_PEACE)
-                empire_ids.insert(loop_empire_id);
+        // add empires at peace with specified empire
+        if (main_empire_id != ALL_EMPIRES) {
+            auto peacey_rng = all_empire_ids | range_filter(not_main_empire)
+                | range_transform(to_id_status) | range_filter(are_peacey) | range_keys;
+            empire_ids.insert(empire_ids.end(), peacey_rng.begin(), peacey_rng.end());
         }
         break;
     }
 
     case EmpireAffiliationType::AFFIL_ENEMY: {
-        // add enemies of specified empire
-        for ([[maybe_unused]] auto& [loop_empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire; // quiet unused variable warning
-            if (loop_empire_id == empire_id || empire_id == ALL_EMPIRES)
-                continue;
+        static constexpr auto are_warring = [](const auto& id_status)
+        { return id_status.second == DiplomaticStatus::DIPLO_WAR; };
 
-            DiplomaticStatus status = context.ContextDiploStatus(empire_id, loop_empire_id);
-            if (status == DiplomaticStatus::DIPLO_WAR)
-                empire_ids.insert(loop_empire_id);
+        // add enemies of specified empire
+        if (main_empire_id != ALL_EMPIRES) {
+            auto warring_rng = all_empire_ids | range_filter(not_main_empire)
+                | range_transform(to_id_status) | range_filter(are_warring) | range_keys;
+            empire_ids.insert(empire_ids.end(), warring_rng.begin(), warring_rng.end());
         }
         break;
     }
@@ -4230,35 +4282,32 @@ void SetVisibility::Execute(ScriptingContext& context) const {
         break;
 
     case EmpireAffiliationType::AFFIL_ANY:
-    default: {
-        // add all empires
-        for ([[maybe_unused]] auto& [loop_empire_id, unused_empire] : context.Empires()) {
-            (void)unused_empire; // quiet unused variable warning
-            empire_ids.insert(loop_empire_id);
-        }
+    default: 
+        empire_ids.insert(empire_ids.end(), all_empire_ids.begin(), all_empire_ids.end());
         break;
-    }
     }
 
     // what to set visibility of?
-    std::set<int> object_ids;
+    std::vector<int> object_ids;
     if (!m_condition) {
-        object_ids.insert(context.effect_target->ID());
+        object_ids.push_back(context.effect_target->ID());
     } else {
-        Condition::ObjectSet condition_matches;
-        m_condition->Eval(context, condition_matches);
-        for (auto& object : condition_matches)
-            object_ids.insert(object->ID());
+        // get target object IDs
+        Condition::ObjectSet condition_matches = m_condition->Eval(std::as_const(context));
+        object_ids.reserve(condition_matches.size());
+        std::transform(condition_matches.begin(), condition_matches.end(),
+                       std::back_inserter(object_ids),
+                       [](const auto* o) { return o->ID(); });
+        // ensure uniqueness
+        std::sort(object_ids.begin(), object_ids.end());
+        auto unique_it = std::unique(object_ids.begin(), object_ids.end());
+        object_ids.resize(std::distance(object_ids.begin(), unique_it));
     }
 
-    int source_id = INVALID_OBJECT_ID;
-    if (context.source)
-        source_id = context.source->ID();
+    const int source_id = context.source ? context.source->ID() : INVALID_OBJECT_ID;
 
-    for (int emp_id : empire_ids) {
-        if (!context.GetEmpire(emp_id))
-            continue;
-        for (int obj_id : object_ids) {
+    for (const int emp_id : empire_ids) {
+        for (const int obj_id : object_ids) {
             // store source object id and ValueRef to evaluate to determine
             // what visibility level to set at time of application
             context.ContextUniverse().SetEffectDerivedVisibility(emp_id, obj_id, source_id, m_vis.get());
@@ -4266,7 +4315,7 @@ void SetVisibility::Execute(ScriptingContext& context) const {
     }
 }
 
-std::string SetVisibility::Dump(unsigned short ntabs) const {
+std::string SetVisibility::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs);
 
     retval += DumpIndent(ntabs) + "SetVisibility affiliation = ";
@@ -4303,11 +4352,11 @@ void SetVisibility::SetTopLevelContent(const std::string& content_name) {
         m_condition->SetTopLevelContent(content_name);
 }
 
-unsigned int SetVisibility::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t SetVisibility::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "SetVisibility");
-    CheckSums::CheckSumCombine(retval, m_vis.get());
+    CheckSums::CheckSumCombine(retval, m_vis);
     CheckSums::CheckSumCombine(retval, m_empire_id);
     CheckSums::CheckSumCombine(retval, m_affiliation);
     CheckSums::CheckSumCombine(retval, m_condition);
@@ -4344,7 +4393,7 @@ void Conditional::Execute(ScriptingContext& context) const {
     if (!context.effect_target)
         return;
 
-    if (!m_target_condition || m_target_condition->Eval(context, context.effect_target)) {
+    if (!m_target_condition || m_target_condition->EvalOne(context, context.effect_target)) {
         for (auto& effect : m_true_effects) {
             if (effect)
                 effect->Execute(context);
@@ -4423,7 +4472,7 @@ void Conditional::Execute(ScriptingContext& context,
     }
 }
 
-std::string Conditional::Dump(unsigned short ntabs) const {
+std::string Conditional::Dump(uint8_t ntabs) const {
     std::string retval = DumpIndent(ntabs) + "If\n";
     if (m_target_condition) {
         retval += DumpIndent(ntabs+1) + "condition =\n";
@@ -4457,7 +4506,7 @@ std::string Conditional::Dump(unsigned short ntabs) const {
     return retval;
 }
 
-bool Conditional::IsMeterEffect() const {
+bool Conditional::IsMeterEffect() const noexcept {
     for (auto& effect : m_true_effects) {
         if (effect->IsMeterEffect())
             return true;
@@ -4469,7 +4518,7 @@ bool Conditional::IsMeterEffect() const {
     return false;
 }
 
-bool Conditional::IsAppearanceEffect() const {
+bool Conditional::IsAppearanceEffect() const noexcept {
     for (auto& effect : m_true_effects) {
         if (effect->IsAppearanceEffect())
             return true;
@@ -4481,7 +4530,7 @@ bool Conditional::IsAppearanceEffect() const {
     return false;
 }
 
-bool Conditional::IsSitrepEffect() const {
+bool Conditional::IsSitrepEffect() const noexcept {
     for (auto& effect : m_true_effects) {
         if (effect->IsSitrepEffect())
             return true;
@@ -4504,8 +4553,8 @@ void Conditional::SetTopLevelContent(const std::string& content_name) {
             (effect)->SetTopLevelContent(content_name);
 }
 
-unsigned int Conditional::GetCheckSum() const {
-    unsigned int retval{0};
+uint32_t Conditional::GetCheckSum() const {
+    uint32_t retval{0};
 
     CheckSums::CheckSumCombine(retval, "Conditional");
     CheckSums::CheckSumCombine(retval, m_target_condition);

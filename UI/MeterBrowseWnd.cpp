@@ -6,11 +6,11 @@
 #include "../universe/Building.h"
 #include "../universe/Effect.h"
 #include "../universe/Planet.h"
-#include "../universe/PopCenter.h"
 #include "../universe/Ship.h"
 #include "../universe/ShipDesign.h"
 #include "../universe/ShipPart.h"
 #include "../universe/UniverseObject.h"
+#include "../universe/ValueRef.h"
 #include "../Empire/Empire.h"
 #include "../combat/CombatDamage.h"
 #include "../client/human/GGHumanClientApp.h"
@@ -147,7 +147,7 @@ void MeterBrowseWnd::Initialize() {
         std::string summary_title_text;
         if (m_primary_meter_type == MeterType::METER_POPULATION) {
             std::string human_readable_species_name;
-            if (auto pop = std::dynamic_pointer_cast<const PopCenter>(obj)) {
+            if (auto pop = std::dynamic_pointer_cast<const Planet>(obj)) {
                 const std::string& species_name = pop->SpeciesName();
                 if (!species_name.empty())
                     human_readable_species_name = UserString(species_name);
@@ -538,7 +538,7 @@ void ShipDamageBrowseWnd::UpdateSummary() {
     if (!ship)
         return;
 
-    const ScriptingContext context;
+    const ScriptingContext& context = ClientApp::GetApp()->GetContext();
 
     // unpaired meter total for breakdown summary
     float total_structure_damage = ship->TotalWeaponsShipDamage(context, 0.0f, false);
@@ -553,21 +553,23 @@ void ShipDamageBrowseWnd::UpdateSummary() {
 }
 
 void ShipDamageBrowseWnd::UpdateEffectLabelsAndValues(GG::Y& top) {
+    const ScriptingContext& context = ClientApp::GetApp()->GetContext();
+
     // clear existing labels
-    for (const auto& effect_label : m_effect_labels_and_values) {
-        DetachChild(effect_label.first);
-        DetachChild(effect_label.second);
+    for (const auto& [label, value] : m_effect_labels_and_values) {
+        DetachChild(label);
+        DetachChild(value);
     }
     m_effect_labels_and_values.clear();
 
     // get object and meter, aborting if not valid
-    auto ship = Objects().get<Ship>(m_object_id);
+    auto ship = context.ContextObjects().getRaw<Ship>(m_object_id);
     if (!ship) {
         ErrorLogger() << "ShipDamageBrowseWnd::UpdateEffectLabelsAndValues couldn't get ship with id " << m_object_id;
         return;
     }
 
-    const ShipDesign* design = GetUniverse().GetShipDesign(ship->DesignID());
+    const ShipDesign* design = context.ContextUniverse().GetShipDesign(ship->DesignID());
     if (!design)
         return;
 
@@ -584,9 +586,9 @@ void ShipDamageBrowseWnd::UpdateEffectLabelsAndValues(GG::Y& top) {
             continue;
 
         // get the attack power for each weapon part
-        const ScriptingContext context{ship};
-        float part_attack = ship->WeaponPartShipDamage(part, context);
-        float part_fighters_shot = ship->WeaponPartFighterDamage(part, context);
+        const ScriptingContext source_context{context, ScriptingContext::Source{}, ship};
+        float part_attack = ship->WeaponPartShipDamage(part, source_context);
+        float part_fighters_shot = ship->WeaponPartFighterDamage(part, source_context);
 
         auto text = boost::io::str(FlexibleFormat(label_template) % name % UserString(part_name));
 
@@ -659,7 +661,7 @@ namespace {
     };
 }
 
-ShipFightersBrowseWnd::ShipFightersBrowseWnd(int object_id, MeterType primary_meter_type, bool show_all_bouts /* = false*/) :
+ShipFightersBrowseWnd::ShipFightersBrowseWnd(int object_id, MeterType primary_meter_type, bool show_all_bouts ) :
     MeterBrowseWnd(object_id, primary_meter_type),
     m_show_all_bouts(show_all_bouts)
 {}
@@ -755,7 +757,7 @@ void ShipFightersBrowseWnd::UpdateEffectLabelsAndValues(GG::Y& top) {
     m_bay_list->DetachChildren();
     m_hangar_list->DetachChildren();
 
-    ScriptingContext context;
+    const ScriptingContext& context = ClientApp::GetApp()->GetContext();
     const Universe& u = context.ContextUniverse();
     const ObjectMap& o = context.ContextObjects();
 
@@ -773,9 +775,9 @@ void ShipFightersBrowseWnd::UpdateEffectLabelsAndValues(GG::Y& top) {
         return;
 
     // colors used, these could be moved to OptionsDB if other controls utilize similar value types
-    constexpr GG::Clr DAMAGE_COLOR = GG::CLR_ORANGE;
-    constexpr GG::Clr BAY_COLOR = GG::Clr(0, 160, 255, 255);
-    constexpr GG::Clr HANGAR_COLOR = GG::CLR_YELLOW;
+    static constexpr GG::Clr DAMAGE_COLOR = GG::CLR_ORANGE;
+    static constexpr GG::Clr BAY_COLOR = GG::Clr(0, 160, 255, 255);
+    static constexpr GG::Clr HANGAR_COLOR = GG::CLR_YELLOW;
 
     const GG::X LABEL_WIDTH = FighterBrowseLabelWidth();
     const GG::X QTY_WIDTH = MeterBrowseQtyWidth();
@@ -856,7 +858,7 @@ void ShipFightersBrowseWnd::UpdateEffectLabelsAndValues(GG::Y& top) {
                                                         DAMAGE_COLOR);
 
     if (!m_show_all_bouts) {
-        constexpr int BOUTS_TO_SHOW_LIMIT = 2;
+        static constexpr int BOUTS_TO_SHOW_LIMIT = 2;
 
         // Show damage for first wave (2nd combat round)
         auto bout_info = Combat::ResolveFighterBouts(

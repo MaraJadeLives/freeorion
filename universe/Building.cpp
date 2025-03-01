@@ -1,64 +1,66 @@
 #include "Building.h"
 
 #include "BuildingType.h"
-#include "UniverseObjectVisitor.h"
 #include "Universe.h"
 #include "../Empire/EmpireManager.h"
 #include "../util/AppInterface.h"
 #include "../util/i18n.h"
 
 
-Building::Building(int empire_id, std::string building_type, int produced_by_empire_id,
-                   int creation_turn) :
+Building::Building(int empire_id, std::string building_type, int produced_by_empire_id, int creation_turn) :
     UniverseObject{UniverseObjectType::OBJ_BUILDING, "", empire_id, creation_turn},
     m_building_type(std::move(building_type)),
     m_produced_by_empire_id(produced_by_empire_id)
 {
     const BuildingType* type = GetBuildingType(m_building_type);
     Rename(type ? UserString(type->Name()) : UserString("ENC_BUILDING"));
-
-    UniverseObject::Init();
 }
 
-Building* Building::Clone(const Universe& universe, int empire_id) const {
-    Visibility vis = universe.GetObjectVisibilityByEmpire(this->ID(), empire_id);
+std::shared_ptr<UniverseObject> Building::Clone(const Universe& universe, int empire_id) const {
+    const Visibility vis = empire_id == ALL_EMPIRES ?
+        Visibility::VIS_FULL_VISIBILITY : universe.GetObjectVisibilityByEmpire(this->ID(), empire_id);
 
     if (!(vis >= Visibility::VIS_BASIC_VISIBILITY && vis <= Visibility::VIS_FULL_VISIBILITY))
         return nullptr;
 
-    auto retval = std::make_unique<Building>();
-    retval->Copy(shared_from_this(), universe, empire_id);
-    return retval.release();
+    auto retval = std::make_shared<Building>();
+    retval->Copy(*this, universe, empire_id);
+    return retval;
 }
 
-void Building::Copy(std::shared_ptr<const UniverseObject> copied_object,
-                    const Universe& universe, int empire_id)
-{
-    if (copied_object.get() == this)
+void Building::Copy(const UniverseObject& copied_object, const Universe& universe, int empire_id) {
+    if (&copied_object == this)
         return;
-    auto copied_building = std::dynamic_pointer_cast<const Building>(copied_object);
-    if (!copied_building) {
+    if (copied_object.ObjectType() != UniverseObjectType::OBJ_BUILDING) {
         ErrorLogger() << "Building::Copy passed an object that wasn't a Building";
         return;
     }
 
-    int copied_object_id = copied_object->ID();
-    Visibility vis = universe.GetObjectVisibilityByEmpire(copied_object_id, empire_id);
-    auto visible_specials = universe.GetObjectVisibleSpecialsByEmpire(copied_object_id, empire_id);
+    Copy(static_cast<const Building&>(copied_object), universe, empire_id);
+}
 
-    UniverseObject::Copy(std::move(copied_object), vis, visible_specials, universe);
+void Building::Copy(const Building& copied_building, const Universe& universe, int empire_id) {
+    if (&copied_building == this)
+        return;
+
+    const int copied_object_id = copied_building.ID();
+    const Visibility vis = empire_id == ALL_EMPIRES ?
+        Visibility::VIS_FULL_VISIBILITY : universe.GetObjectVisibilityByEmpire(copied_object_id, empire_id);
+    const auto visible_specials = universe.GetObjectVisibleSpecialsByEmpire(copied_object_id, empire_id);
+
+    UniverseObject::Copy(copied_building, vis, visible_specials, universe);
 
     if (vis >= Visibility::VIS_BASIC_VISIBILITY) {
-        this->m_planet_id =                 copied_building->m_planet_id;
+        this->m_planet_id =                 copied_building.m_planet_id;
 
         if (vis >= Visibility::VIS_PARTIAL_VISIBILITY) {
-            this->m_name =                  copied_building->m_name;
+            this->m_name =                  copied_building.m_name;
 
-            this->m_building_type =         copied_building->m_building_type;
-            this->m_produced_by_empire_id = copied_building->m_produced_by_empire_id;
+            this->m_building_type =         copied_building.m_building_type;
+            this->m_produced_by_empire_id = copied_building.m_produced_by_empire_id;
 
             if (vis >= Visibility::VIS_FULL_VISIBILITY)
-                this->m_ordered_scrapped =  copied_building->m_ordered_scrapped;
+                this->m_ordered_scrapped =  copied_building.m_ordered_scrapped;
         }
     }
 }
@@ -70,33 +72,38 @@ bool Building::HostileToEmpire(int empire_id, const EmpireManager& empires) cons
         empires.GetDiplomaticStatus(Owner(), empire_id) == DiplomaticStatus::DIPLO_WAR;
 }
 
-UniverseObject::TagVecs Building::Tags(const ScriptingContext&) const {
-    if (const BuildingType* type = ::GetBuildingType(m_building_type))
-        return type->Tags();
-    return {};
+UniverseObject::TagVecs Building::Tags() const {
+    const BuildingType* type = ::GetBuildingType(m_building_type);
+    return type ? TagVecs{type->Tags()} : TagVecs{};
 }
 
-bool Building::HasTag(std::string_view name, const ScriptingContext&) const {
+bool Building::HasTag(std::string_view name) const {
     const BuildingType* type = GetBuildingType(m_building_type);
     return type && type->HasTag(name);
 }
 
-bool Building::ContainedBy(int object_id) const {
+bool Building::ContainedBy(int object_id) const noexcept {
     return object_id != INVALID_OBJECT_ID
         && (    object_id == m_planet_id
             ||  object_id == this->SystemID());
 }
 
-std::string Building::Dump(unsigned short ntabs) const {
+std::size_t Building::SizeInMemory() const {
+    std::size_t retval = UniverseObject::SizeInMemory();
+    retval += sizeof(Building) - sizeof(UniverseObject);
+
+    retval += sizeof(decltype(m_building_type)::value_type)*m_building_type.capacity();
+
+    return retval;
+}
+
+std::string Building::Dump(uint8_t ntabs) const {
     std::stringstream os;
     os << UniverseObject::Dump(ntabs);
     os << " building type: " << m_building_type
        << " produced by empire id: " << m_produced_by_empire_id;
     return os.str();
 }
-
-std::shared_ptr<UniverseObject> Building::Accept(const UniverseObjectVisitor& visitor) const
-{ return visitor.Visit(std::const_pointer_cast<Building>(std::static_pointer_cast<const Building>(shared_from_this()))); }
 
 void Building::SetPlanetID(int planet_id) {
     if (planet_id != m_planet_id) {

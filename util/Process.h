@@ -45,8 +45,14 @@ public:
         Process returns immediately. */
     Process(const std::string& cmd, const std::vector<std::string>& argv);
 
-    bool Empty() const      { return m_empty; }         ///< returns true if this is a default-constructed object with no associated process
-    bool HasLowPriority()   { return m_low_priority; }  ///< true if process is set to low priority
+    ~Process() noexcept;
+    Process(Process&&) noexcept;
+    Process(const Process&) = delete;
+    Process& operator=(Process&&) noexcept;
+    Process& operator=(const Process&) = delete;
+
+    bool Empty() const noexcept { return m_empty; }           ///< true if this is a default-constructed object with no associated process
+    bool HasLowPriority() noexcept { return m_low_priority; } ///< true if process is set to low priority
 
     /** sets process priority */
     bool SetLowPriority(bool low);
@@ -67,7 +73,7 @@ public:
 private:
     class Impl;
 
-    std::shared_ptr<Impl>   m_impl;
+    std::unique_ptr<Impl>   m_impl;
     bool                    m_empty = false;        ///< true iff this is a default-constructed Process (no associated process exists)
     bool                    m_low_priority = false; ///< true if this process is set to low priority
 };

@@ -13,23 +13,26 @@ CHANCE_OF_GUARD_1
                 ]
             ]
             effects = [
-                If condition = Or [ Random probability = 0.6   Homeworld ]
+                If condition = And [
+                        Random probability = 0.5
+                        [[MINIMUM_DISTANCE_EMPIRE_CHECK]]
+                    ]
                     effects = [
                         If condition = ContainedBy Contains Planet type = Asteroids
-                                effects = CreateShip designname = OneOf("SM_SNAIL", "SM_GUARD_0", "SM_GUARD_1")
-                        else = [
-                            CreateShip designname = OneOf("SM_GUARD_0", "SM_GUARD_1")
-                        ]
+                            effects = CreateShip designname = OneOf("SM_SNAIL", "SM_GUARD_0", "SM_GUARD_1")
+                            else = CreateShip designname = OneOf("SM_GUARD_0", "SM_GUARD_1")
                     ]
                 else = [
-                    If condition = Random probability = 0.8
+                    If condition = And [
+                        Random probability = 0.5
+                        Not Homeworld
+                    ]
                         effects = [
                             SetSpecies name = "SP_ANCIENT_GUARDIANS"
                             SetPopulation value = Target.TargetPopulation
                         ]
-                    else = [
-                        AddSpecial name = "CLOUD_COVER_MASTER_SPECIAL"
-                    ]
+                        else =
+                            AddSpecial name = OneOf("CLOUD_COVER_MASTER_SPECIAL", "VOLCANIC_ASH_MASTER_SPECIAL")
                 ]
             ]
 '''
@@ -47,22 +50,22 @@ CHANCE_OF_GUARD_2
             ]
             effects = [
                 If condition = And [
-                        (GalaxyMaxAIAggression >= 1)
-                        (GalaxyMonsterFrequency >= 1)
+                    (GalaxyMaxAIAggression >= 1)
+                    (GalaxyMonsterFrequency >= 1)
+                    [[MINIMUM_DISTANCE_EMPIRE_CHECK]]
+                ]
+                    effects = CreateShip designname = "SM_GUARD_2"
+                    else = If condition = And [
+                        Random probability = 0.7
                         Not Homeworld
                     ]
-                    effects = CreateShip designname = "SM_GUARD_2"
-                else = [
-                    If condition = Random probability = 0.8
                         effects = [
                             SetSpecies name = "SP_ANCIENT_GUARDIANS"
                             SetPopulation value = Target.TargetPopulation
                             AddSpecial name = "MODERATE_TECH_NATIVES_SPECIAL"
                         ]
-                    else = [
-                        AddSpecial name = "VOLCANIC_ASH_MASTER_SPECIAL"
-                    ]
-                ]
+                        else =
+                            AddSpecial name = "VOLCANIC_ASH_MASTER_SPECIAL"
             ]
 '''
 
@@ -79,22 +82,22 @@ CHANCE_OF_GUARD_3
             ]
             effects = [
                 If condition = And [
-                        (GalaxyMaxAIAggression >= 1)
-                        (GalaxyMonsterFrequency >= 1)
+                    (GalaxyMaxAIAggression >= 1)
+                    (GalaxyMonsterFrequency >= 1)
+                    [[MINIMUM_DISTANCE_EMPIRE_CHECK]]
+                ]
+                    effects = CreateShip designname = "SM_GUARD_3"
+                    else = If condition = And [
+                        Random probability = 0.7
                         Not Homeworld
                     ]
-                    effects = CreateShip designname = "SM_GUARD_3"
-                else = [
-                    If condition = Random probability = 0.8
                         effects = [
                             SetSpecies name = "SP_ANCIENT_GUARDIANS"
                             SetPopulation value = Target.TargetPopulation
                             AddSpecial name = "HIGH_TECH_NATIVES_SPECIAL"
                         ]
-                    else = [
-                        AddSpecial name = "DIM_RIFT_MASTER_SPECIAL"
-                    ]
-                ]
+                        else =
+                            AddSpecial name = "DIM_RIFT_MASTER_SPECIAL"
             ]
 '''
 
@@ -102,7 +105,12 @@ CHANCE_OF_HIDE_1
 '''        EffectsGroup
             scope = Source
             activation = And [
-                Turn high = 0
+                // Note: Kraken nests are created in the initial turn and also turns 1 and 2
+                // only check in the first turns of the game. 
+                Turn high = 5
+                Not HasSpecial name = "CLOUD_COVER_MASTER_SPECIAL"
+                // every nest has only one chance to get clouds, no matter which turn it was created:
+                (CurrentTurn <= max(1, 1 + SpecialAddedOnTurn name = ThisSpecial object = Source.ID))
                 Random probability = 0.15
                 (GalaxyMaxAIAggression >= 1)
                 Not ContainedBy Contains Or [
@@ -114,3 +122,5 @@ CHANCE_OF_HIDE_1
                 AddSpecial name = "CLOUD_COVER_MASTER_SPECIAL"
             ]
 '''
+
+#include "/scripting/macros/*.macros"

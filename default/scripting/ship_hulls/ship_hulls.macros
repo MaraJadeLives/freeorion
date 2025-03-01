@@ -43,6 +43,13 @@ GOOD_VISION
         effects = SetDetection value = Value + 50
 '''
 
+VERY_GOOD_VISION
+'''EffectsGroup
+        scope = Source
+        accountinglabel = "VERY_GOOD_VISION_LABEL"
+        effects = SetDetection value = Value + 100
+'''
+
 EXCELLENT_VISION
 '''EffectsGroup
         scope = Source
@@ -114,7 +121,10 @@ REFUEL_MESSAGE
         (Source.MaxFuel >= 1)
         (Source.Fuel
          + @1@ * (Statistic If condition = And [ Source Turn low = Source.ArrivedOnTurn + 1])
-         + 0.1 * (Statistic If condition = And [ Source DesignHasPart name = "FU_RAMSCOOP"])
+         + (NamedRealLookup name = "FU_RAMSCOOP_REFUEL") * (Statistic If condition = And [
+            Source DesignHasPart name = "FU_RAMSCOOP"
+            Source Turn low = Source.ArrivedOnTurn + 1
+            ] )
          + 0.1 * (Statistic If condition = And [
             Source
             Species name = "SP_SLY"
@@ -152,9 +162,9 @@ AVERAGE_BASE_FUEL_REGEN
     stackinggroup = "BASE_FUEL_REGEN"
     accountinglabel = "BASE_FUEL_REGEN_LABEL"
     priority = [[AFTER_ALL_TARGET_MAX_METERS_PRIORITY]]
-    effects = SetFuel value = min(Target.MaxFuel, Value + 0.1001)
+    effects = SetFuel value = min(Target.MaxFuel, Value + 0.1)
 
-   [[REFUEL_MESSAGE(0.1001)]]
+   [[REFUEL_MESSAGE(0.1)]]
 '''
 
 GREAT_FUEL_EFFICIENCY
@@ -209,4 +219,4 @@ ADD_HULL_FUEL_TO_MAX_FUEL_METER
             effects = SetMaxFuel value = ( Value + HullFuel name = Source.Hull )
 '''
 
-#include "/scripting/common/priorities.macros"
+#include "/scripting/macros/priorities.macros"

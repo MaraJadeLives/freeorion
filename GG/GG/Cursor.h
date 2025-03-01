@@ -32,12 +32,17 @@ class Texture;
 class GG_API Cursor
 {
 public:
+#if defined(__cpp_constexpr) && (__cpp_constexpr >= 201907L)
+    constexpr Cursor() = default;
+    constexpr virtual ~Cursor() = default;
+#else
     Cursor() = default;
     virtual ~Cursor() = default;
+#endif
 
     /** Renders the cursor at the specified location.  Subclasses should take
         care to ensure that the cursor's "hotspot" is rendered at \a pt. */
-    virtual void Render(const Pt& pt) = 0;
+    virtual void Render(Pt pt) const {};
 };
 
 /** \brief TextureCursor is a very simple subclass of Cursor.
@@ -45,22 +50,21 @@ public:
     It renders a texture such that the point within the texture that
     represents the hotspot of the cursor is rendered at the click-point of the
     cursor. */
-class GG_API TextureCursor :
-    public Cursor
+class GG_API TextureCursor final : public Cursor
 {
 public:
     /** Ctor.  \a texture is the texture to render and \a hotspot is the
         offset within \a texture where the click-point is located.  \a hotspot
         is clamped to \a texture's valid area. */
-    TextureCursor(std::shared_ptr<Texture> texture, const Pt& hotspot = Pt());
+    TextureCursor(std::shared_ptr<Texture> texture, Pt hotspot = Pt());
 
     /** Returns the texture used to render this TextureCursor. */
-    [[nodiscard]] const std::shared_ptr<Texture>& GetTexture() const;
+    [[nodiscard]] const auto& GetTexture() const noexcept { return m_texture; }
 
     /** Returns the position within Texture() of the cursor hotspot. */
-    [[nodiscard]] const Pt& Hotspot() const;
+    [[nodiscard]] Pt Hotspot() const noexcept { return m_hotspot; }
 
-    void Render(const Pt& pt) override;
+    void Render(Pt pt) const override;
 
 private:
     std::shared_ptr<Texture> m_texture;

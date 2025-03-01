@@ -32,32 +32,34 @@ class Scroll;
 class GG_API ScrollPanel : public Wnd
 {
 public:
-    ScrollPanel();
-    ScrollPanel(X x, Y y, X w, Y h, std::shared_ptr<Wnd> content);
+    ScrollPanel() = default;
+    ScrollPanel(X x, Y y, X w, Y h, std::shared_ptr<Wnd> content) :
+        Wnd(x, y, w, h, INTERACTIVE),
+        m_content(std::move(content))
+    {}
     ~ScrollPanel() = default;
     void CompleteConstruction() override;
 
-    void SizeMove(const Pt& ul, const Pt& lr) override;
+    void SizeMove(Pt ul, Pt lr) override;
     void Render() override;
 
     //! Set the scroll position
     void ScrollTo(Y pos);
 
     //! Sets the background color of the panel.
-    void SetBackgroundColor(const Clr& color);
+    void SetBackgroundColor(Clr color) noexcept { m_background_color = color; }
 
     //! Returns the scroll bar.
-    const Scroll* GetScroll() const
-    { return m_vscroll.get();}
+    const Scroll* GetScroll() const noexcept { return m_vscroll.get();}
 
-    void MouseWheel(const Pt& pt, int move, Flags<ModKey> mod_keys) override;
-    void KeyPress(Key key, std::uint32_t key_code_point, Flags<ModKey> mod_keys) override;
+    void MouseWheel(Pt pt, int move, Flags<ModKey> mod_keys) override;
+    void KeyPress(Key key, uint32_t key_code_point, Flags<ModKey> mod_keys) override;
 
 private:
-    std::shared_ptr<Scroll> m_vscroll; //!< The vertical scroll bar.
-    std::shared_ptr<Wnd> m_content; //!< The content window of the panel.
-    Pt m_content_pos; //!< The position of the content when scrolled properly.
-    Clr m_background_color; //!< The color to paint the background with.
+    std::shared_ptr<Scroll> m_vscroll;      //!< The vertical scroll bar.
+    std::shared_ptr<Wnd> m_content;         //!< The content window of the panel.
+    Pt m_content_pos;                       //!< The position of the content when scrolled properly.
+    Clr m_background_color = GG::CLR_ZERO;  //!< The color to paint the background with.
 
     /**
      * @brief Refreshes the size and positions of the children of this window.

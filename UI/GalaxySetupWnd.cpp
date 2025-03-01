@@ -52,8 +52,8 @@ namespace {
             DoLayout();
         }
 
-        void SizeMove(const GG::Pt& ul, const GG::Pt& lr) override {
-            const GG::Pt old_size = Size();
+        void SizeMove(GG::Pt ul, GG::Pt lr) override {
+            const auto old_size = Size();
             GG::Control::SizeMove(ul, lr);
             if (old_size != Size())
                 DoLayout();
@@ -93,9 +93,9 @@ namespace {
                 push_back(m_contents);
         }
 
-        void SizeMove(const GG::Pt& ul, const GG::Pt& lr) override {
+        void SizeMove(GG::Pt ul, GG::Pt lr) override {
             //std::cout << "RuleListRow::SizeMove(" << ul << ", " << lr << ")" << std::endl;
-            const GG::Pt old_size = Size();
+            const auto old_size = Size();
             GG::ListBox::Row::SizeMove(ul, lr);
             if (!empty() && old_size != Size() && m_contents)
                 m_contents->Resize(Size());
@@ -119,8 +119,8 @@ namespace {
             SetVScrollWheelIncrement(ClientUI::Pts() * 10);
         }
 
-        void SizeMove(const GG::Pt& ul, const GG::Pt& lr) override {
-            const GG::Pt old_size = Size();
+        void SizeMove(GG::Pt ul, GG::Pt lr) override {
+            const auto old_size = Size();
             CUIListBox::SizeMove(ul, lr);
             if (old_size != Size()) {
                 const GG::X row_width = ListRowWidth();
@@ -151,6 +151,8 @@ namespace {
         db.Add("setup.initial.species",         UserStringNop("OPTIONS_DB_GAMESETUP_STARTING_SPECIES_NAME"),    std::string("SP_HUMAN"),    Validator<std::string>());
     }
     bool temp_bool = RegisterOptions(&AddOptions);
+
+    constexpr std::string_view formatting_chars = "<>;:,.@#$%&*(){}'\"/?\\`[]|\a\b\f\n\r\t\b";
 }
 
 ////////////////////////////////////////////////
@@ -173,12 +175,12 @@ void GameRulesPanel::CompleteConstruction() {
     indexed_pages[""] = CreatePage(UserString("GENERAL"));
 
     // for all rules, add to page
-    for (const auto& rule : GetGameRules()) {
+    for (const auto* rule : GetGameRules().GetSortedByCategoryAndRank()) {
         // get or create page for rule
-        auto itr = indexed_pages.find(rule.second.category);
+        auto itr = indexed_pages.find(rule->category);
         if (itr == indexed_pages.end()) {
-            indexed_pages[rule.second.category] = CreatePage(UserString(rule.second.category));
-            itr = indexed_pages.find(rule.second.category);
+            indexed_pages[rule->category] = CreatePage(UserString(rule->category));
+            itr = indexed_pages.find(rule->category);
         }
         if (itr == indexed_pages.end()) {
             ErrorLogger() << "Unable to create and insert and then find new rule page";
@@ -187,18 +189,18 @@ void GameRulesPanel::CompleteConstruction() {
         auto current_page = itr->second;
 
         // add rule to page
-        switch (rule.second.type) {
+        switch (rule->type) {
         case GameRule::Type::TOGGLE:
-            BoolRuleWidget(current_page, 0, rule.first);
+            BoolRuleWidget(current_page, 0, rule->name);
             break;
         case GameRule::Type::INT:
-            IntRuleWidget(current_page, 0, rule.first);
+            IntRuleWidget(current_page, 0, rule->name);
             break;
         case GameRule::Type::DOUBLE:
-            DoubleRuleWidget(current_page, 0, rule.first);
+            DoubleRuleWidget(current_page, 0, rule->name);
             break;
         case GameRule::Type::STRING:
-            StringRuleWidget(current_page, 0, rule.first);
+            StringRuleWidget(current_page, 0, rule->name);
             break;
         default:
             break;
@@ -216,7 +218,7 @@ std::map<std::string, std::string> GameRulesPanel::GetRulesAsStrings() const {
     return retval;
 }
 
-void GameRulesPanel::SizeMove(const GG::Pt& ul, const GG::Pt& lr) {
+void GameRulesPanel::SizeMove(GG::Pt ul, GG::Pt lr) {
     GG::Control::SizeMove(ul, lr);
     DoLayout();
 }
@@ -302,20 +304,31 @@ GG::Spin<int>* GameRulesPanel::IntRuleWidget(GG::ListBox* page, int indentation_
                                                   GG::INTERACTIVE);
 
     auto validator = GetGameRules().GetValidator(rule_name);
-    int value = GetGameRules().Get<int>(rule_name);
 
     std::shared_ptr<GG::Spin<int>> spin;
-    if (auto ranged_validator = dynamic_cast<const RangedValidator<int>*>(validator))
+    if (auto ranged_validator = dynamic_cast<const RangedValidator<int>*>(validator)) {
+        const int value = GetGameRules().Get<int>(rule_name);
         spin = GG::Wnd::Create<CUISpin<int>>(value, 1, ranged_validator->m_min, ranged_validator->m_max, true);
 
-    else if (auto step_validator = dynamic_cast<const StepValidator<int>*>(validator))
+    } else if (auto step_validator = dynamic_cast<const StepValidator<int>*>(validator)) {
+        const int value = GetGameRules().Get<int>(rule_name);
         spin = GG::Wnd::Create<CUISpin<int>>(value, step_validator->m_step_size, -1000000, 1000000, true);
 
-    else if (auto ranged_step_validator = dynamic_cast<const RangedStepValidator<int>*>(validator))
-        spin = GG::Wnd::Create<CUISpin<int>>(value, ranged_step_validator->m_step_size, ranged_step_validator->m_min, ranged_step_validator->m_max, true);
+    } else if (auto ranged_step_validator = dynamic_cast<const RangedStepValidator<int>*>(validator)) {
+        const int value = GetGameRules().Get<int>(rule_name);
+        spin = GG::Wnd::Create<CUISpin<int>>(value, ranged_step_validator->m_step_size,
+                                             ranged_step_validator->m_min, ranged_step_validator->m_max, true);
 
-    else //if (auto int_validator = dynamic_cast<const Validator<int>*>(validator))
-        spin = GG::Wnd::Create<CUISpin<int>>(value, 1, -1000000, 1000000, true);
+    } else if (auto vis_validator = dynamic_cast<const RangedValidator<Visibility>*>(validator)) {
+        const int value = static_cast<int>(GetGameRules().Get<Visibility>(rule_name));
+        spin = GG::Wnd::Create<CUISpin<int>>(value, 1, static_cast<int>(vis_validator->m_min),
+                                             static_cast<int>(vis_validator->m_max), true);
+
+    } else { //if (auto int_validator = dynamic_cast<const Validator<int>*>(validator)) 
+        const int value = GetGameRules().Get<int>(rule_name);
+        spin = GG::Wnd::Create<CUISpin<int>>(value, 1, -10000, 10000, true);
+    }
+
 
     if (!spin) {
         ErrorLogger() << "Unable to create IntRuleWidget spin";
@@ -331,9 +344,8 @@ GG::Spin<int>* GameRulesPanel::IntRuleWidget(GG::ListBox* page, int indentation_
     layout->SetColumnStretch(1, 1.0);
     layout->SetChildClippingMode(ChildClippingMode::ClipToClient);
 
-    auto row = GG::Wnd::Create<RuleListRow>(Width(), spin->MinUsableSize().y + CONTROL_VMARGIN + 6,
-                                            std::move(layout), indentation_level);
-    page->Insert(std::move(row));
+    page->Insert(GG::Wnd::Create<RuleListRow>(Width(), spin->MinUsableSize().y + CONTROL_VMARGIN + 6,
+                                              std::move(layout), indentation_level));
 
     spin->SetBrowseModeTime(GetOptionsDB().Get<int>("ui.tooltip.delay"));
     spin->SetBrowseText(UserString(GetGameRules().GetDescription(rule_name)));
@@ -351,7 +363,7 @@ GG::Spin<double>* GameRulesPanel::DoubleRuleWidget(GG::ListBox* page, int indent
     auto text_control = GG::Wnd::Create<CUILabel>(UserString(rule_name), GG::FORMAT_LEFT | GG::FORMAT_NOWRAP, GG::INTERACTIVE);
 
     const ValidatorBase* validator = GetGameRules().GetValidator(rule_name);
-    double value = GetGameRules().Get<double>(rule_name);
+    const double value = GetGameRules().Get<double>(rule_name);
 
     std::shared_ptr<GG::Spin<double>> spin;
     if (auto ranged_validator = dynamic_cast<const RangedValidator<double>*>(validator))
@@ -379,9 +391,8 @@ GG::Spin<double>* GameRulesPanel::DoubleRuleWidget(GG::ListBox* page, int indent
     layout->SetColumnStretch(1, 1.0);
     layout->SetChildClippingMode(ChildClippingMode::ClipToClient);
 
-    auto row = GG::Wnd::Create<RuleListRow>(Width(), spin->MinUsableSize().y + CONTROL_VMARGIN + 6,
-                                            layout, indentation_level);
-    page->Insert(row);
+    page->Insert(GG::Wnd::Create<RuleListRow>(Width(), spin->MinUsableSize().y + CONTROL_VMARGIN + 6,
+                                              layout, indentation_level));
 
     spin->SetBrowseModeTime(GetOptionsDB().Get<int>("ui.tooltip.delay"));
     spin->SetBrowseText(UserString(GetGameRules().GetDescription(rule_name)));
@@ -451,9 +462,8 @@ GG::DropDownList* GameRulesPanel::StringRuleWidget(GG::ListBox* page, int indent
     layout->SetColumnStretch(1, 1.0);
     layout->SetChildClippingMode(ChildClippingMode::ClipToClient);
 
-    auto row = GG::Wnd::Create<RuleListRow>(Width(), drop->MinUsableSize().y + CONTROL_VMARGIN + 6,
-                                            layout, indentation_level);
-    page->Insert(row);
+    page->Insert(GG::Wnd::Create<RuleListRow>(Width(), drop->MinUsableSize().y + CONTROL_VMARGIN + 6,
+                                              layout, indentation_level));
 
     drop->SetBrowseModeTime(GetOptionsDB().Get<int>("ui.tooltip.delay"));
     drop->SetBrowseText(UserString(GetGameRules().GetDescription(rule_name)));
@@ -557,7 +567,7 @@ void GalaxySetupPanel::CompleteConstruction() {
     } else {
         m_seed_edit = GG::Wnd::Create<CUIEdit>(m_seed);
     }
-    m_seed_edit->DisallowChars("<>/\\[]'`?{}, ");
+    m_seed_edit->DisallowChars(formatting_chars);
 
     boost::filesystem::path button_texture_dir = ClientUI::ArtDir() / "icons" / "buttons";
 
@@ -820,7 +830,7 @@ Aggression GalaxySetupPanel::GetAIAggression() const
 std::shared_ptr<GG::Texture> GalaxySetupPanel::PreviewImage() const
 { return m_textures[int(GetShape())]; }
 
-void GalaxySetupPanel::SizeMove(const GG::Pt& ul, const GG::Pt& lr) {
+void GalaxySetupPanel::SizeMove(GG::Pt ul, GG::Pt lr) {
     GG::Control::SizeMove(ul, lr);
     DoLayout();
 }
@@ -828,7 +838,7 @@ void GalaxySetupPanel::SizeMove(const GG::Pt& ul, const GG::Pt& lr) {
 void GalaxySetupPanel::DoLayout() {
     const GG::X LABELS_WIDTH = (Width() - CONTROL_MARGIN) / 2;
     const GG::X DROPLIST_WIDTH = LABELS_WIDTH;
-    const GG::Y DROPLIST_HEIGHT(ClientUI::Pts() + 12);
+    const GG::Y DROPLIST_HEIGHT{ClientUI::Pts() + 12};
 
     GG::Pt row_advance(GG::X0, PANEL_CONTROL_SPACING);
 
@@ -838,7 +848,7 @@ void GalaxySetupPanel::DoLayout() {
     GG::Pt control_ul(GG::Pt(LABELS_WIDTH + 2 * CONTROL_MARGIN, GG::Y0) + GG::Pt(GG::X0, (PANEL_CONTROL_SPACING - m_seed_edit->MinUsableSize().y) / 2));
     GG::Pt control_lr = control_ul + GG::Pt(LABELS_WIDTH -30, m_seed_edit->MinUsableSize().y);
     GG::Pt button_ul(2 * LABELS_WIDTH + 3 * CONTROL_MARGIN - 30, CONTROL_VMARGIN);
-    GG::Pt button_lr = button_ul + GG::Pt(GG::X(20), GG::Y(20));
+    GG::Pt button_lr = button_ul + GG::Pt(GG::X{20}, GG::Y{20});
 
     m_seed_label->SizeMove(label_ul, label_lr);
     m_seed_edit->SizeMove(control_ul, control_lr);
@@ -917,7 +927,7 @@ void GalaxySetupPanel::DoLayout() {
     m_ai_aggression_list->SizeMove(control_ul, control_lr);
 }
 
-void GalaxySetupPanel::Disable(bool b/* = true*/) {
+void GalaxySetupPanel::Disable(bool b) {
     for (auto& child : Children())
         static_cast<GG::Control*>(child.get())->Disable(b);
 }
@@ -990,12 +1000,14 @@ void GalaxySetupWnd::CompleteConstruction() {
     m_player_name_label->SetBrowseModeTime(GetOptionsDB().Get<int>("ui.tooltip.delay"));
     m_player_name_label->SetBrowseText(UserString(GetOptionsDB().GetDescription("setup.player.name")));
     m_player_name_edit = GG::Wnd::Create<CUIEdit>(GetOptionsDB().Get<std::string>("setup.player.name"));
+    m_player_name_edit->DisallowChars(formatting_chars);
 
     // empire name
     m_empire_name_label = GG::Wnd::Create<CUILabel>(UserString("GSETUP_EMPIRE_NAME"), GG::FORMAT_RIGHT, GG::INTERACTIVE);
     m_empire_name_label->SetBrowseModeTime(GetOptionsDB().Get<int>("ui.tooltip.delay"));
     m_empire_name_label->SetBrowseText(UserString(GetOptionsDB().GetDescription("setup.empire.name")));
     m_empire_name_edit = GG::Wnd::Create<CUIEdit>(GetOptionsDB().Get<std::string>("setup.empire.name"));
+    m_empire_name_edit->DisallowChars(formatting_chars);
 
     // empire color
     m_empire_color_label = GG::Wnd::Create<CUILabel>(UserString("GSETUP_EMPIRE_COLOR"), GG::FORMAT_RIGHT, GG::INTERACTIVE);
@@ -1089,13 +1101,13 @@ void GalaxySetupWnd::Render() {
                       GG::CLR_BLACK, ClientUI::WndInnerBorderColor(), 1);
 }
 
-void GalaxySetupWnd::KeyPress(GG::Key key, std::uint32_t key_code_point, GG::Flags<GG::ModKey> mod_keys) {
+void GalaxySetupWnd::KeyPress(GG::Key key, uint32_t key_code_point, GG::Flags<GG::ModKey> mod_keys) {
     // Enter is no longer accepted as OK as it could clash with ALT-Enter
     if (key == GG::Key::GGK_ESCAPE) // Same behaviour as if "Cancel" was pressed
         CancelClicked();
 }
 
-void GalaxySetupWnd::SizeMove(const GG::Pt& ul, const GG::Pt& lr) {
+void GalaxySetupWnd::SizeMove(GG::Pt ul, GG::Pt lr) {
     CUIWnd::SizeMove(ul, lr);
     DoLayout();
 }
@@ -1273,10 +1285,10 @@ void GalaxySetupWnd::OkClicked() {
     TraceLogger() << "GalaxySetupWnd::OkClicked end";
 
     m_ended_with_ok = true;
-    m_done = true;
+    m_modal_done.store(true);
 }
 
 void GalaxySetupWnd::CancelClicked() {
     m_ended_with_ok = false;
-    m_done = true;
+    m_modal_done.store(true);
 }

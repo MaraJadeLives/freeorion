@@ -11,7 +11,6 @@
 
 #include "Export.h"
 
-class PopCenter;
 class OrderSet;
 class Universe;
 class UniverseObject;
@@ -106,7 +105,7 @@ extern template FO_COMMON_API void SerializeIncompleteLogs<freeorion_xml_oarchiv
 
 class EmpireManager;
 
-BOOST_CLASS_VERSION(EmpireManager, 2);
+BOOST_CLASS_VERSION(EmpireManager, 3);
 
 template <typename Archive>
 void serialize(Archive&, EmpireManager&, unsigned int const);
@@ -156,7 +155,7 @@ extern template FO_COMMON_API void serialize<freeorion_xml_iarchive>(freeorion_x
 
 struct PlayerSaveGameData;
 
-BOOST_CLASS_VERSION(PlayerSaveGameData, 2);
+BOOST_CLASS_VERSION(PlayerSaveGameData, 3);
 
 template <typename Archive>
 void serialize(Archive&, PlayerSaveGameData&, unsigned int const);
@@ -202,15 +201,6 @@ extern template FO_COMMON_API void serialize<freeorion_bin_oarchive>(freeorion_b
 extern template FO_COMMON_API void serialize<freeorion_bin_iarchive>(freeorion_bin_iarchive&, PlayerSetupData&, unsigned int const);
 extern template FO_COMMON_API void serialize<freeorion_xml_oarchive>(freeorion_xml_oarchive&, PlayerSetupData&, unsigned int const);
 extern template FO_COMMON_API void serialize<freeorion_xml_iarchive>(freeorion_xml_iarchive&, PlayerSetupData&, unsigned int const);
-
-
-template <typename Archive>
-void serialize(Archive&, PopCenter&, unsigned int const);
-
-extern template FO_COMMON_API void serialize<freeorion_bin_oarchive>(freeorion_bin_oarchive&, PopCenter&, unsigned int const);
-extern template FO_COMMON_API void serialize<freeorion_bin_iarchive>(freeorion_bin_iarchive&, PopCenter&, unsigned int const);
-extern template FO_COMMON_API void serialize<freeorion_xml_oarchive>(freeorion_xml_oarchive&, PopCenter&, unsigned int const);
-extern template FO_COMMON_API void serialize<freeorion_xml_iarchive>(freeorion_xml_iarchive&, PopCenter&, unsigned int const);
 
 
 struct PreviewInformation;
@@ -273,6 +263,8 @@ extern template FO_COMMON_API void serialize<freeorion_xml_iarchive>(freeorion_x
 
 
 class SpeciesManager;
+
+BOOST_CLASS_VERSION(SpeciesManager, 1)
 
 template <typename Archive>
 void serialize(Archive&, SpeciesManager&, unsigned int const);

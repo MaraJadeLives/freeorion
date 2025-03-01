@@ -2,16 +2,45 @@
 
 #include <boost/python/dict.hpp>
 
+#include "../universe/BuildingType.h"
 #include "../universe/Enums.h"
 #include "../universe/Planet.h"
 #include "../universe/Species.h"
 #include "../universe/System.h"
 #include "../universe/ValueRef.h"
 #include "../Empire/ResourcePool.h"
+#include "../Empire/ProductionQueue.h"
 
 void RegisterGlobalsEnums(boost::python::dict& globals) {
-    globals["EnemyOf"] = enum_wrapper<EmpireAffiliationType>(EmpireAffiliationType::AFFIL_ENEMY);
-    globals["Influence"] = enum_wrapper<ResourceType>(ResourceType::RE_INFLUENCE);
+    for (const auto& op : std::initializer_list<std::pair<const char*, ResourceType>>{
+        {"ResourceInfluence", ResourceType::RE_INFLUENCE},
+        {"ResourceIndustry",  ResourceType::RE_INDUSTRY}})
+    {
+        globals[op.first] = enum_wrapper<ResourceType>(op.second);
+    }
+
+    for (const auto& op : std::initializer_list<std::pair<const char*, EmpireAffiliationType>>{
+            {"TheEmpire", EmpireAffiliationType::AFFIL_SELF},
+            {"EnemyOf",   EmpireAffiliationType::AFFIL_ENEMY},
+            {"PeaceWith", EmpireAffiliationType::AFFIL_PEACE},
+            {"AllyOf",    EmpireAffiliationType::AFFIL_ALLY},
+            {"AnyEmpire", EmpireAffiliationType::AFFIL_ANY},
+            {"None",      EmpireAffiliationType::AFFIL_NONE},
+            {"CanSee",    EmpireAffiliationType::AFFIL_CAN_SEE},
+            {"Human",     EmpireAffiliationType::AFFIL_HUMAN}})
+    {
+        globals[op.first] = enum_wrapper<EmpireAffiliationType>(op.second);
+    }
+
+// TODO more meter types
+    for (const auto& op : std::initializer_list<std::pair<const char*, MeterType>>{
+            {"Capacity",         MeterType::METER_CAPACITY},
+            {"MaxCapacity",      MeterType::METER_MAX_CAPACITY},
+            {"SecondaryStat",    MeterType::METER_SECONDARY_STAT},
+            {"MaxSecondaryStat", MeterType::METER_MAX_SECONDARY_STAT}})
+    {
+        globals[op.first] = enum_wrapper<MeterType>(op.second);
+    }
 
     for (const auto& op : std::initializer_list<std::pair<const char*, ::PlanetEnvironment>>{
             {"Uninhabitable", PlanetEnvironment::PE_UNINHABITABLE},
@@ -84,5 +113,41 @@ void RegisterGlobalsEnums(boost::python::dict& globals) {
         globals[op.first] = enum_wrapper<PlanetType>(op.second);
     }
 
+    for (const auto& op : std::initializer_list<std::pair<const char*, UnlockableItemType>>{
+            {"UnlockBuilding",   UnlockableItemType::UIT_BUILDING},
+            {"UnlockShipPart",   UnlockableItemType::UIT_SHIP_PART},
+            {"UnlockShipHull",   UnlockableItemType::UIT_SHIP_HULL},
+            {"UnlockShipDesign", UnlockableItemType::UIT_SHIP_DESIGN},
+            {"UnlockTech",       UnlockableItemType::UIT_TECH},
+            {"UnlockPolicy",     UnlockableItemType::UIT_POLICY}})
+    {
+        globals[op.first] = enum_wrapper<UnlockableItemType>(op.second);
+    }
+
+    for (const auto& op : std::initializer_list<std::pair<const char*, BuildType>>{
+            {"BuildBuilding", BuildType::BT_BUILDING},
+            {"BuildShip", BuildType::BT_SHIP}})
+    {
+        globals[op.first] = enum_wrapper<BuildType>(op.second);
+    }
+
+    // visibility_parser_rules
+    for (const auto& vis : std::initializer_list<std::pair<const char*, Visibility>>{
+            {"Invisible", Visibility::VIS_NO_VISIBILITY},
+            {"Basic",     Visibility::VIS_BASIC_VISIBILITY},
+            {"Partial",   Visibility::VIS_PARTIAL_VISIBILITY},
+            {"Full",      Visibility::VIS_FULL_VISIBILITY}})
+    {
+        globals[vis.first] = enum_wrapper<Visibility>(vis.second);
+    }
+
+    // capture_result_enum_grammar
+    for (const auto& capt : std::initializer_list<std::pair<const char*, CaptureResult>>{
+            {"Capture",          CaptureResult::CR_CAPTURE},
+            {"Retain",           CaptureResult::CR_RETAIN},
+            {"DestroyOnCapture", CaptureResult::CR_DESTROY}})
+    {
+        globals[capt.first] = enum_wrapper<CaptureResult>(capt.second);
+    }
 }
 

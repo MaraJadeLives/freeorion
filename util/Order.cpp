@@ -1,7 +1,8 @@
-#include "Order.h"
+﻿#include "Order.h"
 
 #include <fstream>
 #include <vector>
+#include <boost/algorithm/string/trim.hpp>
 #include <boost/uuid/nil_generator.hpp>
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
@@ -12,6 +13,7 @@
 #include "../Empire/Empire.h"
 #include "../Empire/EmpireManager.h"
 #include "../universe/Building.h"
+#include "../universe/Condition.h"
 #include "../universe/Fleet.h"
 #include "../universe/Pathfinder.h"
 #include "../universe/Planet.h"
@@ -49,38 +51,174 @@ bool Order::Undo(ScriptingContext& context) const {
 }
 
 namespace {
+#if defined(__cpp_lib_constexpr_string) && ((!defined(__GNUC__) || (__GNUC__ > 12) || (__GNUC__ == 12 && __GNUC_MINOR__ >= 2))) && ((!defined(_MSC_VER) || (_MSC_VER >= 1934))) && ((!defined(__clang_major__) || (__clang_major__ >= 17)))
+    constexpr std::string EMPTY_STRING;
+#else
     const std::string EMPTY_STRING;
+#endif
+
     const std::string& ExecutedTag(const Order* order) {
         if (order && !order->Executed())
             return UserString("ORDER_UNEXECUTED");
         return EMPTY_STRING;
     }
+
+    // checks for first and continuation bytes in allowed ranges for UTF8
+    // doesn't check for overlong sequences
+    constexpr bool IsValidUTF8(std::string_view sv) {
+        if (sv.empty())
+            return true;
+
+        auto it = sv.begin();
+        auto dist = std::distance(it, sv.end());
+
+        while (true) {
+            const uint8_t c = *it;
+            const std::ptrdiff_t sequence_length =
+                (c <= 0x7F) ? 1 :
+                (c >= 0xC2 && c <= 0xDF) ? 2 :
+                (c >= 0xE0 && c <= 0xEF) ? 3 :
+                (c >= 0xF0) ? 4 : 0;
+
+            if (dist < sequence_length || sequence_length == 0)
+                return false;
+
+            if (sequence_length == 1) {
+                dist -= 1;
+
+            } else if (sequence_length == 2) {
+                const uint8_t c2 = *++it;
+                if (c2 < 0x80 || c2 > 0xBF)
+                    return false;
+                dist -= 2;
+
+            } else if (sequence_length == 3) {
+                const uint8_t c2 = *++it;
+                if (c2 < 0x80 || c2 > 0xBF)
+                    return false;
+                const uint8_t c3 = *++it;
+                if (c3 < 0x80 || c3 > 0xBF)
+                    return false;
+                dist -= 3;
+
+            }  else if (sequence_length == 4) {
+                const uint8_t c2 = *++it;
+                if (c2 < 0x80 || c2 > 0xBF)
+                    return false;
+                const uint8_t c3 = *++it;
+                if (c3 < 0x80 || c3 > 0xBF)
+                    return false;
+                const uint8_t c4 = *++it;
+                if (c4 < 0x80 || c4 > 0xBF)
+                    return false;
+                dist -= 4;
+            }
+
+            ++it;
+
+            if (dist < 1)
+                return true;
+        }
+
+        return true;
+    };
+
+    template <std::size_t N>
+    constexpr bool IsValidUTF8(std::array<char, N> arr)
+    { return IsValidUTF8(std::string_view{arr.data(), arr.size()}); }
+
+    static_assert(IsValidUTF8("test string!"));
+
+#if defined(__cpp_lib_char8_t)
+    constexpr std::u8string_view long_chars = u8"αbåオーガитیای مجهو ";
+    constexpr auto long_chars_arr = []() {
+        std::array<std::string_view::value_type, long_chars.size()> retval{};
+        for (std::size_t idx = 0; idx < retval.size(); ++idx)
+            retval[idx] = long_chars[idx];
+        return retval;
+    }();
+    constexpr std::string_view long_chars_sv(long_chars_arr.data(), long_chars_arr.size());
+#else
+    constexpr std::string_view long_chars_sv = u8"αbåオーガитیای مجهو";
+#endif
+    static_assert(IsValidUTF8(long_chars_sv));
+
+    static_assert(IsValidUTF8(""));
+
+    constexpr auto ch = [](const uint8_t u) -> char { return static_cast<char>(u); };
+
+    constexpr std::array<char, 4> some_chars1{33, 53, ch(225), 90}; // two ascii chars, then a truncated sequence
+    static_assert(!IsValidUTF8(some_chars1));
+
+    constexpr std::array<char, 1> some_chars2{ch(239)}; // truncated 3 byte sequence
+    static_assert(!IsValidUTF8(some_chars2));
+
+    constexpr std::array<char, 4> some_chars3{ch(255), 1, 80, 80}; // 4 byte sequence with second byte that is not a continuation byte
+    static_assert(!IsValidUTF8(some_chars3));
+
+    constexpr std::array<char, 4> some_chars4{50, 60, ch(192), 80}; // two ascii chars, then an invalid first byte
+    static_assert(!IsValidUTF8(some_chars4));
+
+    constexpr bool IsControlChar(const uint8_t c) noexcept
+    { return c < 0x20 || c == 0x7F || (c >= 0x81 && c <= 0x9F); }
+
+    constexpr std::string_view formatting_chars = "<>;:,.@#$%&*(){}'\"/?\\`[]|\a\b\f\n\r\t\b";
+    constexpr bool IsFormattingChar(char c)
+    { return formatting_chars.find(c) != std::string_view::npos; }
 }
 
 ////////////////////////////////////////////////
 // RenameOrder
 ////////////////////////////////////////////////
-RenameOrder::RenameOrder(int empire, int object, const std::string& name,
+RenameOrder::RenameOrder(int empire, int object, std::string name,
                          const ScriptingContext& context) :
     Order(empire),
     m_object(object),
-    m_name(name)
+    m_name(std::move(name))
 {
-    if (!Check(empire, object, name, context)) {
+    if (!Check(empire, object, m_name, context))
         m_object = INVALID_OBJECT_ID;
-        return;
-    }
 }
 
 std::string RenameOrder::Dump() const
 { return boost::io::str(FlexibleFormat(UserString("ORDER_RENAME")) % m_object % m_name) + ExecutedTag(this); }
 
-bool RenameOrder::Check(int empire, int object, const std::string& new_name,
+bool RenameOrder::Check(int empire, int object, std::string new_name,
                         const ScriptingContext& context)
 {
-    // disallow the name "", since that denotes an unknown object
+    if (new_name.size() > 64) {
+        ErrorLogger() << "RenameOrder::Check() : passed an overly long new_name of size: " << new_name.size();
+        return false;
+    }
+
+#if defined(FREEORION_ANDROID)
+    boost::trim(new_name);
+#else
+    auto& locale = GetLocale();
+    boost::trim(new_name, locale);
+#endif
+
+    // disallow nameless objects
     if (new_name.empty()) {
         ErrorLogger() << "RenameOrder::Check() : passed an empty new_name.";
+        return false;
+    }
+
+    // check UTF8 valididty
+    if (!IsValidUTF8(new_name)) {
+        ErrorLogger() << "RenameOrder::Check() : passed invalid UTF8 new_name.";
+        return false;
+    }
+
+    // disallow control characters
+    if (std::any_of(new_name.begin(), new_name.end(), IsControlChar)) {
+        ErrorLogger() << "RenameOrder::Check : passed control character in name.";
+        return false;
+    }
+
+    // disallow formatting characters
+    if (std::any_of(new_name.begin(), new_name.end(), IsFormattingChar)) {
+        ErrorLogger() << "RenameOrder::Check : passed formatting character in name.";
         return false;
     }
 
@@ -146,7 +284,7 @@ NewFleetOrder::NewFleetOrder(int empire, std::string fleet_name,
         return;
 }
 
-bool NewFleetOrder::Aggressive() const
+bool NewFleetOrder::Aggressive() const noexcept
 { return m_aggression == FleetAggression::FLEET_AGGRESSIVE; }
 
 std::string NewFleetOrder::Dump() const {
@@ -172,10 +310,15 @@ bool NewFleetOrder::Check(int empire, const std::string& fleet_name, const std::
         return false;
     }
 
+    if (auto pos = fleet_name.find_first_of(formatting_chars); pos != std::string::npos) {
+        ErrorLogger() << "New fleet name contains banned character: \"" << fleet_name[pos] << "\"";
+        return false;
+    }
+
     int system_id = INVALID_OBJECT_ID;
 
     std::set<int> arrival_starlane_ids;
-    for (const auto& ship : context.ContextObjects().find<Ship>(ship_ids)) {
+    for (const auto* ship : context.ContextObjects().findRaw<Ship>(ship_ids)) {
         if (!ship) {
             ErrorLogger() << "Empire " << empire << " attempted to create a new fleet (" << fleet_name
                           << ") with an invalid ship";
@@ -196,7 +339,7 @@ bool NewFleetOrder::Check(int empire, const std::string& fleet_name, const std::
     }
 
 
-    for (const auto& ship : context.ContextObjects().find<Ship>(ship_ids)) {
+    for (const auto* ship : context.ContextObjects().findRaw<Ship>(ship_ids)) {
         // verify that empire is not trying to take ships from somebody else's fleet
         if (!ship->OwnedBy(empire)) {
             ErrorLogger() << "Empire " << empire << " attempted to create a new fleet (" << fleet_name
@@ -243,12 +386,13 @@ void NewFleetOrder::ExecuteImpl(ScriptingContext& context) const {
 
     Universe& u = context.ContextUniverse();
     ObjectMap& o = context.ContextObjects();
-    auto empire_ids = context.EmpireIDs();
+    const auto& ids_as_flatset{context.EmpireIDs()};
+    const std::vector<int> empire_ids{ids_as_flatset.begin(), ids_as_flatset.end()};
 
     u.InhibitUniverseObjectSignals(true);
 
     // validate specified ships
-    auto validated_ships = o.find<Ship>(m_ship_ids);
+    auto validated_ships = o.findRaw<Ship>(m_ship_ids);
 
     int system_id = validated_ships[0]->SystemID();
     auto system = o.get<System>(system_id);
@@ -276,7 +420,7 @@ void NewFleetOrder::ExecuteImpl(ScriptingContext& context) const {
     // an ID is provided to ensure consistancy between server and client universes
     u.SetEmpireObjectVisibility(EmpireID(), fleet->ID(), Visibility::VIS_FULL_VISIBILITY);
 
-    system->Insert(fleet);
+    system->Insert(fleet, System::NO_ORBIT, context.current_turn, o);
 
     // new fleet will get same m_arrival_starlane as fleet of the first ship in the list.
     auto first_ship{validated_ships[0]};
@@ -284,17 +428,19 @@ void NewFleetOrder::ExecuteImpl(ScriptingContext& context) const {
     if (first_fleet)
         fleet->SetArrivalStarlane(first_fleet->ArrivalStarlane());
 
-    std::unordered_set<std::shared_ptr<Fleet>> modified_fleets;
+    std::vector<Fleet*> modified_fleets;
     int ordered_moved_turn = BEFORE_FIRST_TURN;
     // remove ships from old fleet(s) and add to new
-    for (auto& ship : validated_ships) {
-        if (auto old_fleet = o.get<Fleet>(ship->FleetID())) {
+    for (auto* ship : validated_ships) {
+        if (auto* old_fleet = o.getRaw<Fleet>(ship->FleetID())) {
             ordered_moved_turn = std::max(ordered_moved_turn, old_fleet->LastTurnMoveOrdered());
             old_fleet->RemoveShips({ship->ID()});
-            modified_fleets.insert(std::move(old_fleet));
+            modified_fleets.push_back(old_fleet);
         }
         ship->SetFleetID(fleet->ID());
     }
+    std::sort(modified_fleets.begin(), modified_fleets.end());
+    modified_fleets.erase(std::unique(modified_fleets.begin(), modified_fleets.end()), modified_fleets.end());
     fleet->AddShips(m_ship_ids);
     fleet->SetMoveOrderedTurn(ordered_moved_turn);
 
@@ -303,16 +449,15 @@ void NewFleetOrder::ExecuteImpl(ScriptingContext& context) const {
 
     u.InhibitUniverseObjectSignals(false);
 
-    std::vector<std::shared_ptr<Fleet>> created_fleets{fleet};
-    system->FleetsInsertedSignal(created_fleets);
+    system->FleetsInsertedSignal(std::vector<int>{fleet->ID()}, o);
     system->StateChangedSignal();
 
     // Signal changed state of modified fleets and remove any empty fleets.
-    for (auto& modified_fleet : modified_fleets) {
+    for (auto* modified_fleet : modified_fleets) {
         if (!modified_fleet->Empty()) {
             modified_fleet->StateChangedSignal();
         } else {
-            if (auto modified_fleet_system = o.get<System>(modified_fleet->SystemID()))
+            if (auto modified_fleet_system = o.getRaw<System>(modified_fleet->SystemID()))
                 modified_fleet_system->Remove(modified_fleet->ID());
 
             u.Destroy(modified_fleet->ID(), empire_ids);
@@ -333,7 +478,11 @@ FleetMoveOrder::FleetMoveOrder(int empire_id, int fleet_id, int dest_system_id,
     if (!Check(empire_id, fleet_id, dest_system_id, append, context))
         return;
 
-    auto fleet = context.ContextObjects().get<Fleet>(FleetID()); // TODO: Get from passed-in stuff
+    auto fleet = context.ContextObjects().getRaw<Fleet>(m_fleet);
+    //if (!fleet) { // additional check not necessary after calling Check(...)
+    //    ErrorLogger() << "FleetMoveOrder has invalid fleed id:" << m_fleet;
+    //    return;
+    //}
 
     int start_system = fleet->SystemID();
     if (start_system == INVALID_OBJECT_ID)
@@ -341,37 +490,37 @@ FleetMoveOrder::FleetMoveOrder(int empire_id, int fleet_id, int dest_system_id,
     if (append && !fleet->TravelRoute().empty())
         start_system = fleet->TravelRoute().back();
 
-    auto short_path = context.ContextUniverse().GetPathfinder()->ShortestPath(
-        start_system, m_dest_system, EmpireID(), context.ContextObjects());
-    if (short_path.first.empty()) {
+    auto short_path = context.ContextUniverse().GetPathfinder().ShortestPath(
+        start_system, m_dest_system, EmpireID(), context.ContextObjects()).first;
+    if (short_path.empty()) {
         ErrorLogger() << "FleetMoveOrder generated empty shortest path between system " << start_system
-                      << " and " << m_dest_system << " for empire " << EmpireID() << " with fleet " << fleet_id;
+                      << " and " << m_dest_system << " for empire " << EmpireID()
+                      << " with fleet " << m_fleet;
         return;
     }
 
     // if in a system now, don't include it in the route
-    if (short_path.first.front() == fleet->SystemID()) {
-        DebugLogger() << "FleetMoveOrder removing fleet " << fleet_id
+    if (short_path.front() == fleet->SystemID()) {
+        DebugLogger() << "FleetMoveOrder removing fleet " << m_fleet
                       << " current system location " << fleet->SystemID()
                       << " from shortest path to system " << m_dest_system;
-        short_path.first.erase(short_path.first.begin()); // pop_front();
+        short_path.erase(short_path.begin()); // pop_front();
     }
 
-    m_route = std::move(short_path.first);
+    m_route = std::move(short_path);
 
     // ensure a zero-length (invalid) route is not requested / sent to a fleet
     if (m_route.empty())
         m_route.push_back(start_system);
 }
 
-std::string FleetMoveOrder::Dump() const {
-    return UserString("ORDER_FLEET_MOVE");
-}
+std::string FleetMoveOrder::Dump() const
+{ return boost::io::str(FlexibleFormat(UserString("ORDER_FLEET_MOVE")) % m_fleet % m_dest_system) + ExecutedTag(this); }
 
 bool FleetMoveOrder::Check(int empire_id, int fleet_id, int dest_system_id,
                            bool append, const ScriptingContext& context)
 {
-    auto fleet = context.ContextObjects().get<Fleet>(fleet_id);
+    auto fleet = context.ContextObjects().getRaw<Fleet>(fleet_id);
     if (!fleet) {
         ErrorLogger() << "Empire with id " << empire_id << " ordered fleet with id " << fleet_id << " to move, but no such fleet exists";
         return false;
@@ -384,7 +533,7 @@ bool FleetMoveOrder::Check(int empire_id, int fleet_id, int dest_system_id,
 
     const auto& known_objs{AppEmpireID() == ALL_EMPIRES ?
         context.ContextUniverse().EmpireKnownObjects(empire_id) : context.ContextObjects()};
-    auto dest_system = known_objs.get<System>(dest_system_id);
+    auto dest_system = known_objs.getRaw<System>(dest_system_id);
     if (!dest_system) {
         ErrorLogger() << "Empire with id " << empire_id << " ordered fleet to move to system with id " << dest_system_id << " but no such system is known to that empire";
         return false;
@@ -441,14 +590,14 @@ void FleetMoveOrder::ExecuteImpl(ScriptingContext& context) const {
     }
 
     // check destination validity: disallow movement that's out of range
-    auto eta = fleet->ETA(fleet->MovePath(fleet_travel_route, false, context));
+    const auto eta = fleet->ETA(fleet->MovePath(fleet_travel_route, false, context));
     if (eta.first == Fleet::ETA_NEVER || eta.first == Fleet::ETA_OUT_OF_RANGE) {
         DebugLogger() << "FleetMoveOrder::ExecuteImpl rejected out of range move order";
         return;
     }
 
     try {
-        fleet->SetRoute(fleet_travel_route, context.ContextObjects());
+        fleet->SetRoute(std::move(fleet_travel_route), context.ContextObjects());
         fleet->SetMoveOrderedTurn(context.current_turn);
         // todo: set last turn ordered moved
     } catch (const std::exception& e) {
@@ -459,18 +608,26 @@ void FleetMoveOrder::ExecuteImpl(ScriptingContext& context) const {
 ////////////////////////////////////////////////
 // FleetTransferOrder
 ////////////////////////////////////////////////
-FleetTransferOrder::FleetTransferOrder(int empire, int dest_fleet, const std::vector<int>& ships,
+FleetTransferOrder::FleetTransferOrder(int empire, int dest_fleet, std::vector<int> ships,
                                        const ScriptingContext& context) :
     Order(empire),
     m_dest_fleet(dest_fleet),
-    m_add_ships(ships)
+    m_add_ships(std::move(ships))
 {
-    if (!Check(empire, dest_fleet, ships, context))
+    if (!Check(empire, m_dest_fleet, m_add_ships, context))
         ErrorLogger() << "FleetTransferOrder constructor found problem...";
 }
 
-std::string FleetTransferOrder::Dump() const
-{ return UserString("ORDER_FLEET_TRANSFER"); }
+std::string FleetTransferOrder::Dump() const {
+    std::string ships;
+    if (!m_add_ships.empty()) {
+        ships.reserve(15*m_add_ships.size()); // guesstimate
+        for (auto s : m_add_ships)
+            ships.append(std::to_string(s)).append(" ");
+        ships.resize(ships.length() - 1);
+    }
+    return boost::io::str(FlexibleFormat(UserString("ORDER_FLEET_TRANSFER")) % ships % m_dest_fleet) + ExecutedTag(this);
+}
 
 bool FleetTransferOrder::Check(int empire_id, int dest_fleet_id, const std::vector<int>& ship_ids,
                                const ScriptingContext& context)
@@ -559,7 +716,7 @@ void FleetTransferOrder::ExecuteImpl(ScriptingContext& context) const {
     auto target_fleet = context.ContextObjects().get<Fleet>(m_dest_fleet);
 
     // check that all ships are in the same system
-    auto ships = context.ContextObjects().find<Ship>(m_add_ships);
+    auto ships = context.ContextObjects().findRaw<Ship>(m_add_ships);
 
     context.ContextUniverse().InhibitUniverseObjectSignals(true);
 
@@ -585,7 +742,8 @@ void FleetTransferOrder::ExecuteImpl(ScriptingContext& context) const {
 
     // signal change to fleet states
     modified_fleets.insert(target_fleet.get());
-    auto empire_ids = context.EmpireIDs();
+    const auto& ids_as_flatset{context.EmpireIDs()};
+    const std::vector<int> empire_ids{ids_as_flatset.begin(), ids_as_flatset.end()};
 
     for (auto* modified_fleet : modified_fleets) {
         if (!modified_fleet) {
@@ -602,26 +760,108 @@ void FleetTransferOrder::ExecuteImpl(ScriptingContext& context) const {
 }
 
 ////////////////////////////////////////////////
+// AnnexOrder
+////////////////////////////////////////////////
+AnnexOrder::AnnexOrder(int empire, int planet, const ScriptingContext& context) :
+    Order(empire),
+    m_planet(planet)
+{ Check(empire, m_planet, context); }
+
+std::string AnnexOrder::Dump() const
+{ return boost::io::str(FlexibleFormat(UserString("ORDER_ANNEX")) % m_planet) + ExecutedTag(this); }
+
+bool AnnexOrder::Check(int empire_id, int planet_id, const ScriptingContext& context) {
+    const ObjectMap& o = context.ContextObjects();
+
+    const auto* planet = o.getRaw<const Planet>(planet_id);
+    if (!planet) {
+        ErrorLogger() << "AnnexOrder couldn't get planet with id " << planet_id;
+        return false;
+    }
+
+    if (empire_id == ALL_EMPIRES) {
+        ErrorLogger() << "AnnexOrder given non-empire empire id: " << empire_id;
+        return false;
+    }
+
+    const auto& planet_species_name = planet->SpeciesName();
+    if (planet_species_name.empty()) {
+        ErrorLogger() << "AnnexOrder given planet without a species: " << planet_id;
+        return false;
+    }
+    const auto* planet_species = context.species.GetSpecies(planet_species_name);
+    if (!planet_species) {
+        ErrorLogger() << "AnnexOrder given planet with an unknown species: " << planet_species_name;
+        return false;
+    }
+    const auto* annexation_condition = planet_species->AnnexationCondition();
+    if (!annexation_condition) {
+        ErrorLogger() << "AnnexOrder given planet with species with no annexation condition: " << planet_species_name;
+        return false;
+    }
+
+    if (!context.source)
+        ErrorLogger() << "AnnexOrder given context with no source... Context source should be an object owned by the order issuing empire";
+
+    if (!context.source->OwnedBy(empire_id))
+        ErrorLogger() << "AnnexOrder given context with source not owned by passed in empire id";
+
+    if (!annexation_condition->EvalOne(context, planet)) {
+        ErrorLogger() << "AnnexOrder given planet that does not meet its species annexation condition: " << planet_species_name;
+        return false;
+    }
+
+    // TODO: check IP costs, like adopting policies
+
+    return true;
+}
+
+void AnnexOrder::ExecuteImpl(ScriptingContext& context) const {
+    GetValidatedEmpire(context);
+
+    if (!Check(EmpireID(), m_planet, context))
+        return;
+
+    ObjectMap& objects{context.ContextObjects()};
+    if (auto* planet = objects.getRaw<Planet>(m_planet))
+        planet->SetIsOrderAnnexedByEmpire(EmpireID());
+}
+
+bool AnnexOrder::UndoImpl(ScriptingContext& context) const {
+    ObjectMap& objects{context.ContextObjects()};
+
+    auto* planet = objects.getRaw<Planet>(m_planet);
+    if (!planet) {
+        ErrorLogger() << "AnnexOrder::UndoImpl couldn't get planet with id " << m_planet;
+        return false;
+    }
+
+    planet->ResetBeingAnnxed();
+
+    return true;
+}
+
+////////////////////////////////////////////////
 // ColonizeOrder
 ////////////////////////////////////////////////
 ColonizeOrder::ColonizeOrder(int empire, int ship, int planet, const ScriptingContext& context) :
     Order(empire),
     m_ship(ship),
     m_planet(planet)
-{
-    if (!Check(empire, ship, planet, context))
-        return;
-}
+{ Check(empire, m_ship, m_planet, context); }
 
 std::string ColonizeOrder::Dump() const
-{ return UserString("ORDER_COLONIZE"); }
+{ return boost::io::str(FlexibleFormat(UserString("ORDER_COLONIZE")) % m_planet % m_ship) + ExecutedTag(this); }
 
-bool ColonizeOrder::Check(int empire_id, int ship_id, int planet_id,
-                          const ScriptingContext& context)
-{
+bool ColonizeOrder::Check(int empire_id, int ship_id, int planet_id, const ScriptingContext& context) {
     const Universe& u = context.ContextUniverse();
     const ObjectMap& o = context.ContextObjects();
     const SpeciesManager& sm = context.species;
+
+    if (empire_id == ALL_EMPIRES) {
+        ErrorLogger() << "ColonizeOrder::Check() : empire " << empire_id << " is not an empire";
+        return false;
+    }
 
     auto ship = o.get<Ship>(ship_id);
     if (!ship) {
@@ -672,7 +912,9 @@ bool ColonizeOrder::Check(int empire_id, int ship_id, int planet_id,
         ErrorLogger() << "ColonizeOrder::Check() : given planet that empire has insufficient visibility of";
         return false;
     }
-    if (colonist_capacity > 0.0f && planet->EnvironmentForSpecies(ship->SpeciesName()) < PlanetEnvironment::PE_HOSTILE) {
+    if (colonist_capacity > 0.0f &&
+        planet->EnvironmentForSpecies(context.species, ship->SpeciesName()) < PlanetEnvironment::PE_HOSTILE)
+    {
         ErrorLogger() << "ColonizeOrder::Check() : nonzero colonist capacity, " << colonist_capacity
                       << ", and planet " << planet->Name() << " of type, " << planet->Type() << ", that ship's species, "
                       << ship->SpeciesName() << ", can't colonize";
@@ -689,10 +931,6 @@ bool ColonizeOrder::Check(int empire_id, int ship_id, int planet_id,
         ErrorLogger() << "ColonizeOrder::Check() : given ids of ship and planet not in the same system";
         return false;
     }
-    if (planet->IsAboutToBeColonized()) {
-        ErrorLogger() << "ColonizeOrder::Check() : given id planet that is already being colonized";
-        return false;
-    }
 
     return true;
 }
@@ -705,7 +943,11 @@ void ColonizeOrder::ExecuteImpl(ScriptingContext& context) const {
 
     ObjectMap& objects{context.ContextObjects()};
     auto ship = objects.get<Ship>(m_ship);
+    if (!ship)
+        return;
     auto planet = objects.get<Planet>(m_planet);
+    if (!planet)
+        return;
 
     planet->SetIsAboutToBeColonized(true);
     ship->SetColonizePlanet(m_planet);
@@ -753,83 +995,84 @@ InvadeOrder::InvadeOrder(int empire, int ship, int planet, const ScriptingContex
     Order(empire),
     m_ship(ship),
     m_planet(planet)
-{
-    if (!Check(empire, ship, planet, context))
-        return;
-}
+{ Check(empire, m_ship, m_planet, context); }
 
-std::string InvadeOrder::Dump() const {
-    return UserString("ORDER_INVADE");
-}
+std::string InvadeOrder::Dump() const
+{ return boost::io::str(FlexibleFormat(UserString("ORDER_INVADE")) % m_planet % m_ship) + ExecutedTag(this); }
 
 bool InvadeOrder::Check(int empire_id, int ship_id, int planet_id, const ScriptingContext& context) {
     const Universe& u = context.ContextUniverse();
     const ObjectMap& o = context.ContextObjects();
 
+    if (empire_id == ALL_EMPIRES) {
+        ErrorLogger() << "InvadeOrder::Check() : empire " << empire_id << " is not an empire";
+        return false;
+    }
+
     // make sure ship_id is a ship...
     auto ship = o.get<Ship>(ship_id);
     if (!ship) {
-        ErrorLogger() << "IssueInvadeOrder : passed an invalid ship_id";
+        ErrorLogger() << "IssueInvadeOrder: passed an invalid ship_id";
         return false;
     }
 
     if (!ship->OwnedBy(empire_id)) {
-        ErrorLogger() << "IssueInvadeOrder : empire does not own passed ship";
+        ErrorLogger() << "IssueInvadeOrder: empire does not own passed ship";
         return false;
     }
     if (!ship->HasTroops(u)) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl got ship that can't invade";
+        ErrorLogger() << "InvadeOrder got ship that can't invade";
         return false;
     }
 
     // get fleet of ship
     auto fleet = o.get<Fleet>(ship->FleetID());
     if (!fleet) {
-        ErrorLogger() << "IssueInvadeOrder : ship with passed ship_id has invalid fleet_id";
+        ErrorLogger() << "IssueInvadeOrder: ship with passed ship_id has invalid fleet_id";
         return false;
     }
 
     // make sure player owns ship and its fleet
     if (!fleet->OwnedBy(empire_id)) {
-        ErrorLogger() << "IssueInvadeOrder : empire does not own fleet of passed ship";
+        ErrorLogger() << "IssueInvadeOrder: empire does not own fleet of passed ship";
         return false;
     }
 
     auto planet = o.get<Planet>(planet_id);
     if (!planet) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl couldn't get planet with id " << planet_id;
+        ErrorLogger() << "InvadeOrder couldn't get planet with id " << planet_id;
         return false;
     }
 
     if (ship->SystemID() != planet->SystemID()) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl given ids of ship and planet not in the same system";
+        ErrorLogger() << "InvadeOrder given ids of ship and planet not in the same system";
         return false;
     }
 
     if (u.GetObjectVisibilityByEmpire(planet_id, empire_id) < Visibility::VIS_BASIC_VISIBILITY) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl given planet that empire reportedly has insufficient visibility of, but will be allowed to proceed pending investigation";
+        ErrorLogger() << "InvadeOrder given planet that empire reportedly has insufficient visibility of";
         return false;
     }
 
     if (planet->OwnedBy(empire_id)) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl given planet that is already owned by the order-issuing empire";
+        ErrorLogger() << "InvadeOrder given planet that is already owned by the order-issuing empire";
         return false;
     }
 
     if (planet->Unowned() && planet->GetMeter(MeterType::METER_POPULATION)->Initial() == 0.0f) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl given unpopulated planet";
+        ErrorLogger() << "InvadeOrder given unpopulated planet";
         return false;
     }
 
     if (planet->GetMeter(MeterType::METER_SHIELD)->Initial() > 0.0f) {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl given planet with shield > 0";
+        ErrorLogger() << "InvadeOrder given planet with shield > 0";
         return false;
     }
 
     if (!planet->Unowned() && context.ContextDiploStatus(planet->Owner(), empire_id) !=
                               DiplomaticStatus::DIPLO_WAR)
     {
-        ErrorLogger() << "InvadeOrder::ExecuteImpl given planet owned by an empire not at war with order-issuing empire";
+        ErrorLogger() << "InvadeOrder given planet owned by an empire not at war with order-issuing empire";
         return false;
     }
 
@@ -891,20 +1134,21 @@ BombardOrder::BombardOrder(int empire, int ship, int planet, const ScriptingCont
     Order(empire),
     m_ship(ship),
     m_planet(planet)
-{
-    if(!Check(empire, ship, planet, context))
-        return;
-}
+{ Check(empire, m_ship, m_planet, context); }
 
-std::string BombardOrder::Dump() const {
-    return UserString("ORDER_BOMBARD");
-}
+std::string BombardOrder::Dump() const
+{ return boost::io::str(FlexibleFormat(UserString("ORDER_BOMBARD")) % m_planet % m_ship) + ExecutedTag(this); }
 
 bool BombardOrder::Check(int empire_id, int ship_id, int planet_id,
                          const ScriptingContext& context)
 {
     const Universe& universe = context.ContextUniverse();
     const ObjectMap& objects = context.ContextObjects();
+
+    if (empire_id == ALL_EMPIRES) {
+        ErrorLogger() << "BombardOrder::Check() : empire " << empire_id << " is not an empire";
+        return false;
+    }
 
     auto ship = objects.get<Ship>(ship_id);
     if (!ship) {
@@ -1003,36 +1247,36 @@ bool BombardOrder::UndoImpl(ScriptingContext& context) const {
 ////////////////////////////////////////////////
 // ChangeFocusOrder
 ////////////////////////////////////////////////
-ChangeFocusOrder::ChangeFocusOrder(int empire, int planet, std::string focus,
-                                   const ScriptingContext& context) :
+ChangeFocusOrder::ChangeFocusOrder(int empire, int planet, std::string focus, const ScriptingContext& context) :
     Order(empire),
     m_planet(planet),
-    m_focus(focus)
-{
-    if (!Check(empire, planet, focus, context))
-        return;
-}
+    m_focus(std::move(focus))
+{ Check(empire, m_planet, m_focus, context); }
 
-std::string ChangeFocusOrder::Dump() const {
-    return UserString("ORDER_FOCUS_CHANGE");
-}
+std::string ChangeFocusOrder::Dump() const
+{ return boost::io::str(FlexibleFormat(UserString("ORDER_FOCUS_CHANGE")) % m_planet % m_focus) + ExecutedTag(this); }
 
 bool ChangeFocusOrder::Check(int empire_id, int planet_id, const std::string& focus,
-                             const ScriptingContext& context) {
-    auto planet = context.ContextObjects().get<Planet>(planet_id);
+                             const ScriptingContext& context)
+{
+    auto planet = context.ContextObjects().getRaw<Planet>(planet_id);
 
     if (!planet) {
-        ErrorLogger() << "Illegal planet id specified in change planet focus order.";
+        ErrorLogger() << "Invalid planet id " << planet_id << " specified in change planet focus order.";
         return false;
     }
 
     if (!planet->OwnedBy(empire_id)) {
-        ErrorLogger() << "Empire attempted to issue change planet focus to another's planet.";
+        ErrorLogger() << "Empire " << empire_id
+                      << " attempted to issue change planet focus to another's planet: " << planet_id;
         return false;
     }
 
-    if constexpr (false) {    // todo: verify that focus is valid for specified planet
-        ErrorLogger() << "IssueChangeFocusOrder : invalid focus specified";
+    if (!planet->FocusAvailable(focus, context)) {
+        ErrorLogger() << "IssueChangeFocusOrder : invalid focus (" << focus
+                      << ") for specified for planet " << planet_id << " and empire " << empire_id;
+        // TODO: further clarify why invalid? get species and check that it has the focus, and then
+        //       if the location condition fails?
         return false;
     }
 
@@ -1045,35 +1289,29 @@ void ChangeFocusOrder::ExecuteImpl(ScriptingContext& context) const {
     if (!Check(EmpireID(), m_planet, m_focus, context))
         return;
 
-    auto planet = context.ContextObjects().get<Planet>(m_planet);
+    auto planet = context.ContextObjects().getRaw<Planet>(m_planet);
 
-    planet->SetFocus(m_focus);
+    planet->SetFocus(m_focus, context);
 }
 
 ////////////////////////////////////////////////
 // PolicyOrder
 ////////////////////////////////////////////////
-PolicyOrder::PolicyOrder(int empire, std::string name, std::string category, bool adopt, int slot) :
-    Order(empire),
-    m_policy_name(std::move(name)),
-    m_category(std::move(category)),
-    m_slot(slot),
-    m_adopt(adopt)
-{}
-
-std::string PolicyOrder::Dump() const
-{ return m_adopt ? UserString("ORDER_POLICY_ADOPT") : UserString("ORDER_POLICY_ABANDON"); }
+std::string PolicyOrder::Dump() const {
+    const auto& template_str = m_adopt ? UserString("ORDER_POLICY_ADOPT") : UserString("ORDER_POLICY_ABANDON");
+    return boost::io::str(FlexibleFormat(template_str)
+                          % m_policy_name % m_category % m_slot) + ExecutedTag(this);
+}
 
 void PolicyOrder::ExecuteImpl(ScriptingContext& context) const {
     auto empire = GetValidatedEmpire(context);
     if (m_adopt) {
         DebugLogger() << "PolicyOrder adopt " << m_policy_name << " in category " << m_category
                       << " in slot " << m_slot;
-        empire->AdoptPolicy(m_policy_name, m_category, context, m_adopt, m_slot);
+        empire->AdoptPolicy(m_policy_name, m_category, context, m_slot);
     } else if (!m_revert) {
-        DebugLogger() << "PolicyOrder revoke " << m_policy_name << " from category " << m_category
-                      << " in slot " << m_slot;
-        empire->AdoptPolicy(m_policy_name, m_category, context, m_adopt, m_slot);
+        DebugLogger() << "PolicyOrder de-adopt " << m_policy_name;
+        empire->DeAdoptPolicy(m_policy_name);
     } else {
         empire->RevertPolicies();
     }
@@ -1082,26 +1320,39 @@ void PolicyOrder::ExecuteImpl(ScriptingContext& context) const {
 ////////////////////////////////////////////////
 // ResearchQueueOrder
 ////////////////////////////////////////////////
-ResearchQueueOrder::ResearchQueueOrder(int empire, const std::string& tech_name) :
+ResearchQueueOrder::ResearchQueueOrder(int empire, std::string tech_name) :
     Order(empire),
-    m_tech_name(tech_name),
+    m_tech_name(std::move(tech_name)),
     m_remove(true)
 {}
 
-ResearchQueueOrder::ResearchQueueOrder(int empire, const std::string& tech_name, int position) :
+ResearchQueueOrder::ResearchQueueOrder(int empire, std::string tech_name, int position) :
     Order(empire),
-    m_tech_name(tech_name),
+    m_tech_name(std::move(tech_name)),
     m_position(position)
 {}
 
-ResearchQueueOrder::ResearchQueueOrder(int empire, const std::string& tech_name, bool pause, float dummy) :
+ResearchQueueOrder::ResearchQueueOrder(int empire, std::string tech_name, bool pause, float dummy) :
     Order(empire),
-    m_tech_name(tech_name),
+    m_tech_name(std::move(tech_name)),
     m_pause(pause ? PAUSE : RESUME)
 {}
 
-std::string ResearchQueueOrder::Dump() const
-{ return UserString("ORDER_RESEARCH"); }
+std::string ResearchQueueOrder::Dump() const {
+    const auto& template_str = [this]() -> const auto& {
+        if (m_remove)
+            return UserString("ORDER_RESEARCH_REMOVE");
+        else if (m_pause == PAUSE)
+            return UserString("ORDER_RESEARCH_PAUSE");
+        else if (m_pause == RESUME)
+            return UserString("ORDER_RESEARCH_RESUME");
+        else
+            return UserString("ORDER_RESEARCH_ENQUEUE_AT");
+    }();
+
+    const auto& tech_name = UserStringExists(m_tech_name) ? UserString(m_tech_name) : m_tech_name;
+    return boost::io::str(FlexibleFormat(template_str) % tech_name % m_position) + ExecutedTag(this);
+}
 
 void ResearchQueueOrder::ExecuteImpl(ScriptingContext& context) const {
     auto empire = GetValidatedEmpire(context);
@@ -1127,10 +1378,10 @@ void ResearchQueueOrder::ExecuteImpl(ScriptingContext& context) const {
 // ProductionQueueOrder
 ////////////////////////////////////////////////
 ProductionQueueOrder::ProductionQueueOrder(ProdQueueOrderAction action, int empire,
-                                           const ProductionQueue::ProductionItem& item, // TODO: pass by value and move?
+                                           ProductionQueue::ProductionItem item,
                                            int number, int location, int pos) :
     Order(empire),
-    m_item(item),
+    m_item(std::move(item)),
     m_location(location),
     m_new_quantity(number),
     m_new_index(pos),
@@ -1149,6 +1400,7 @@ ProductionQueueOrder::ProductionQueueOrder(ProdQueueOrderAction action, int empi
 {
     switch(m_action) {
     case ProdQueueOrderAction::REMOVE_FROM_QUEUE:
+    case ProdQueueOrderAction::UNREMOVE_FROM_QUEUE:
         break;
     case ProdQueueOrderAction::SPLIT_INCOMPLETE:
     case ProdQueueOrderAction::DUPLICATE_ITEM:
@@ -1192,19 +1444,29 @@ void ProductionQueueOrder::ExecuteImpl(ScriptingContext& context) const {
             {
                 DebugLogger() << "ProductionQueueOrder place in queue: " << m_item.Dump()
                               << "  at index: " << m_new_index;
-                empire->PlaceProductionOnQueue(m_item, m_uuid, m_new_quantity, 1, m_location, m_new_index);
+                empire->PlaceProductionOnQueue(m_item, m_uuid, context, m_new_quantity, 1, m_location, m_new_index);
             } else {
                 ErrorLogger() << "ProductionQueueOrder tried to place invalid build type in queue!";
             }
             break;
         }
         case ProdQueueOrderAction::REMOVE_FROM_QUEUE: {
-            auto idx = empire->GetProductionQueue().IndexOfUUID(m_uuid);
+            const auto idx = empire->GetProductionQueue().IndexOfUUID(m_uuid);
             if (idx == -1) {
                 ErrorLogger() << "ProductionQueueOrder asked to remove invalid UUID: " << boost::uuids::to_string(m_uuid);
             } else {
                 DebugLogger() << "ProductionQueueOrder removing item at index: " << idx;
-                empire->RemoveProductionFromQueue(idx);
+                empire->MarkToBeRemoved(idx);
+            }
+            break;
+        }
+        case ProdQueueOrderAction::UNREMOVE_FROM_QUEUE: {
+            const auto idx = empire->GetProductionQueue().IndexOfUUID(m_uuid);
+            if (idx == -1) {
+                ErrorLogger() << "ProductionQueueOrder asked to unremove invalid UUID: " << boost::uuids::to_string(m_uuid);
+            } else {
+                DebugLogger() << "ProductionQueueOrder unremoving item at index: " << idx;
+                empire->MarkNotToBeRemoved(idx);
             }
             break;
         }
@@ -1214,7 +1476,7 @@ void ProductionQueueOrder::ExecuteImpl(ScriptingContext& context) const {
                 ErrorLogger() << "ProductionQueueOrder asked to split invalid UUID: " << boost::uuids::to_string(m_uuid);
             } else {
                 DebugLogger() << "ProductionQueueOrder splitting incomplete from item";
-                empire->SplitIncompleteProductionItem(idx, m_uuid2);
+                empire->SplitIncompleteProductionItem(idx, m_uuid2, context);
             }
             break;
         }
@@ -1224,7 +1486,7 @@ void ProductionQueueOrder::ExecuteImpl(ScriptingContext& context) const {
                 ErrorLogger() << "ProductionQueueOrder asked to duplicate invalid UUID: " << boost::uuids::to_string(m_uuid);
             } else {
                 DebugLogger() << "ProductionQueueOrder duplicating item";
-                empire->DuplicateProductionItem(idx, m_uuid2);
+                empire->DuplicateProductionItem(idx, m_uuid2, context);
             }
             break;
         }
@@ -1320,40 +1582,45 @@ void ProductionQueueOrder::ExecuteImpl(ScriptingContext& context) const {
 ////////////////////////////////////////////////
 // ShipDesignOrder
 ////////////////////////////////////////////////
-ShipDesignOrder::ShipDesignOrder(int empire, int existing_design_id_to_remember) :
+ShipDesignOrder::ShipDesignOrder(int empire, int existing_design_id_to_remember,
+                                 const ScriptingContext& context) :
     Order(empire),
     m_design_id(existing_design_id_to_remember)
-{}
+{ CheckRemember(empire, m_design_id, context); }
 
-ShipDesignOrder::ShipDesignOrder(int empire, int design_id_to_erase, bool dummy) :
+ShipDesignOrder::ShipDesignOrder(int empire, int design_id_to_erase, bool dummy,
+                                 const ScriptingContext& context) :
     Order(empire),
     m_design_id(design_id_to_erase),
     m_delete_design_from_empire(true)
-{}
+{ CheckErase(empire, m_design_id, m_delete_design_from_empire, context); }
 
-ShipDesignOrder::ShipDesignOrder(int empire, const ShipDesign& ship_design) :
+ShipDesignOrder::ShipDesignOrder(int empire, const ShipDesign& ship_design,
+                                 const ScriptingContext& context) :
     Order(empire),
-    m_design_id(INVALID_DESIGN_ID),
     m_uuid(ship_design.UUID()),
-    m_create_new_design(true),
     m_name(ship_design.Name(false)),
     m_description(ship_design.Description(false)),
-    m_designed_on_turn(ship_design.DesignedOnTurn()),
     m_hull(ship_design.Hull()),
     m_parts(ship_design.Parts()),
-    m_is_monster(ship_design.IsMonster()),
     m_icon(ship_design.Icon()),
     m_3D_model(ship_design.Model()),
+    m_design_id(INVALID_DESIGN_ID),
+    m_designed_on_turn(ship_design.DesignedOnTurn()),
+    m_create_new_design(true),
+    m_is_monster(ship_design.IsMonster()),
     m_name_desc_in_stringtable(ship_design.LookupInStringtable())
-{}
+{ CheckNew(empire, m_name, m_description, m_hull, m_parts, context); }
 
-ShipDesignOrder::ShipDesignOrder(int empire, int existing_design_id, const std::string& new_name/* = ""*/, const std::string& new_description/* = ""*/) :
+ShipDesignOrder::ShipDesignOrder(int empire, int existing_design_id,
+                                 std::string new_name, std::string new_description,
+                                 const ScriptingContext& context) :
     Order(empire),
+    m_name(std::move(new_name)),
+    m_description(std::move(new_description)),
     m_design_id(existing_design_id),
-    m_update_name_or_description(true),
-    m_name(new_name),
-    m_description(new_description)
-{}
+    m_update_name_or_description(true)
+{ CheckRename(empire, m_design_id, m_name, m_description, context); }
 
 std::string ShipDesignOrder::Dump() const
 { return UserString("ORDER_SHIP_DESIGN"); }
@@ -1364,97 +1631,170 @@ void ShipDesignOrder::ExecuteImpl(ScriptingContext& context) const {
     Universe& universe = context.ContextUniverse();
 
     if (m_delete_design_from_empire) {
-        // player is ordering empire to forget about a particular design
-        if (!empire->ShipDesignKept(m_design_id)) {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to remove a ShipDesign id = " << m_design_id
-                          << " that the empire wasn't remembering";
+        if (!CheckErase(EmpireID(), m_design_id, m_delete_design_from_empire, context))
             return;
-        }
+
         empire->RemoveShipDesign(m_design_id);
 
     } else if (m_create_new_design) {
-        // check if a design with this ID already exists
-        if (const auto existing = universe.GetShipDesign(m_design_id)) {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to create a new ShipDesign with an id, " << m_design_id
-                          << " of an already-existing ShipDesign " << existing->Name();
-
+        if (!CheckNew(EmpireID(), m_name, m_description, m_hull, m_parts, context))
             return;
-        }
 
-        ShipDesign* new_ship_design = nullptr;
         try {
-            new_ship_design = new ShipDesign(std::invalid_argument(""), m_name, m_description,
-                                             m_designed_on_turn, EmpireID(), m_hull, m_parts,
-                                             m_icon, m_3D_model, m_name_desc_in_stringtable,
-                                             m_is_monster, m_uuid);
+            ShipDesign new_ship_design(std::invalid_argument(""), m_name, m_description,
+                                       m_designed_on_turn, EmpireID(), m_hull, m_parts,
+                                       m_icon, m_3D_model, m_name_desc_in_stringtable,
+                                       m_is_monster, m_uuid);
+
+            if (m_design_id == INVALID_DESIGN_ID) {
+                // On the client create a new design id
+                m_design_id = universe.InsertShipDesign(std::move(new_ship_design));
+                DebugLogger() << "ShipDesignOrder::ExecuteImpl inserted new ship design ID " << m_design_id;
+
+            } else {
+                // On the server use the design id passed from the client
+                const auto success = universe.InsertShipDesignID(std::move(new_ship_design), EmpireID(),
+                                                                 m_design_id);
+                if (!success) {
+                    ErrorLogger() << "Couldn't insert ship design by ID " << m_design_id;
+                    return;
+                }
+            }
+
+            universe.SetEmpireKnowledgeOfShipDesign(m_design_id, EmpireID());
+            empire->AddShipDesign(m_design_id, universe);
+
+
         } catch (const std::exception& e) {
             ErrorLogger() << "Couldn't create ship design: " << e.what();
             return;
         }
 
-        if (m_design_id == INVALID_DESIGN_ID) {
-            // On the client create a new design id
-            universe.InsertShipDesign(new_ship_design);
-            m_design_id = new_ship_design->ID();
-            DebugLogger() << "ShipDesignOrder::ExecuteImpl Create new ship design ID " << m_design_id;
-        } else {
-            // On the server use the design id passed from the client
-            if (!universe.InsertShipDesignID(new_ship_design, EmpireID(), m_design_id)) {
-                ErrorLogger() << "Couldn't insert ship design by ID " << m_design_id;
-                return;
-            }
-        }
-
-        universe.SetEmpireKnowledgeOfShipDesign(m_design_id, EmpireID());
-        empire->AddShipDesign(m_design_id, universe);
-
     } else if (m_update_name_or_description) {
-        // player is ordering empire to rename a design
-        const std::set<int>& empire_known_design_ids = universe.EmpireKnownShipDesignIDs(EmpireID());
-        auto design_it = empire_known_design_ids.find(m_design_id);
-        if (design_it == empire_known_design_ids.end()) {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to rename/redescribe a ShipDesign id = " << m_design_id
-                          << " that this empire hasn't seen";
+        if (!CheckRename(EmpireID(), m_design_id, m_name, m_description, context))
             return;
-        }
-        const ShipDesign* design = universe.GetShipDesign(*design_it);
-        if (!design) {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to rename/redescribe a ShipDesign id = " << m_design_id
-                          << " that doesn't exist (but this empire has seen it)!";
-            return;
-        }
-        if (design->DesignedByEmpire() != EmpireID()) {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to rename/redescribe a ShipDesign id = " << m_design_id
-                          << " that isn't owned by this empire!";
-            return;
-        }
+
         universe.RenameShipDesign(m_design_id, m_name, m_description);
 
     } else {
         // player is ordering empire to retain a particular design, so that is can
         // be used to construct ships by that empire.
+        if (!CheckRemember(EmpireID(), m_design_id, context))
+            return;
+        empire->AddShipDesign(m_design_id, universe);
 
         // TODO: consider removing this order, so that an empire needs to use
         // espionage or influence to gain access to a ship design made by another
         // player
-
-        // check if empire is already remembering the design
-        if (empire->ShipDesignKept(m_design_id)) {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to remember a ShipDesign id = " << m_design_id
-                          << " that was already being remembered";
-            return;
-        }
-
-        // check if the empire can see any objects that have this design (thus enabling it to be copied)
-        const std::set<int>& empire_known_design_ids = universe.EmpireKnownShipDesignIDs(EmpireID());
-        if (empire_known_design_ids.count(m_design_id)) {
-            empire->AddShipDesign(m_design_id, universe);
-        } else {
-            ErrorLogger() << "Empire, " << EmpireID() << ", tried to remember a ShipDesign id = " << m_design_id
-                          << " that this empire hasn't seen";
-            return;
-        }
     }
+}
+
+bool ShipDesignOrder::CheckRemember(int empire_id, int existing_design_id_to_remember,
+                                    const ScriptingContext& context)
+{
+    const auto empire = context.GetEmpire(empire_id);
+    if (!empire) {
+        ErrorLogger() << "ShipDesignOrder : given invalid empire id";
+        return false;
+    }
+
+    // check if empire is already remembering the design
+    if (empire->ShipDesignKept(existing_design_id_to_remember)) {
+        ErrorLogger() << "Empire " << empire_id
+                      << " tried to remember a ShipDesign id = " << existing_design_id_to_remember
+                      << " that was already being remembered";
+        return false;
+    }
+
+    // check if the empire can see any objects that have this design (thus enabling it to be copied)
+    auto& empire_known_design_ids = context.ContextUniverse().EmpireKnownShipDesignIDs(empire_id);
+    if (!empire_known_design_ids.contains(existing_design_id_to_remember)) {
+        ErrorLogger() << "Empire " << empire_id
+                      << " tried to remember a ShipDesign id = " << existing_design_id_to_remember
+                      << " that this empire hasn't seen";
+        return false;
+    }
+
+    return true;
+}
+
+bool ShipDesignOrder::CheckErase(int empire_id, int design_id_to_erase, bool dummy,
+                                 const ScriptingContext& context)
+{
+    const auto empire = context.GetEmpire(empire_id);
+    if (!empire) {
+        ErrorLogger() << "ShipDesignOrder : given invalid empire id";
+        return false;
+    }
+
+    // player is ordering empire to forget about a particular design
+    if (!empire->ShipDesignKept(design_id_to_erase)) {
+        ErrorLogger() << "Empire " << empire_id << " tried to remove a ShipDesign id = " << design_id_to_erase
+                      << " that the empire wasn't remembering";
+        return false;
+    }
+
+    return true;
+}
+
+bool ShipDesignOrder::CheckNew(int empire_id, const std::string& name, const std::string& desc,
+                               const std::string& hull, const std::vector<std::string>& parts,
+                               const ScriptingContext& context)
+{
+    const auto empire = context.GetEmpire(empire_id);
+    if (!empire) {
+        ErrorLogger() << "ShipDesignOrder : given invalid empire id";
+        return false;
+    }
+
+    // TODO: check hull and parts
+
+    return true;
+}
+
+bool ShipDesignOrder::CheckRename(int empire_id, int existing_design_id, const std::string& new_name,
+                                  const std::string& new_description, const ScriptingContext& context)
+{
+    const auto empire = context.GetEmpire(empire_id);
+    if (!empire) {
+        ErrorLogger() << "ShipDesignOrder : given invalid empire id";
+        return false;
+    }
+
+    const auto& universe = context.ContextUniverse();
+    // check if a design with this ID exists
+    auto existing = universe.GetShipDesign(existing_design_id);
+    if (!existing) {
+        ErrorLogger() << "Empire " << empire_id
+                      << " tried to rename a ShipDesign with an id, " << existing_design_id
+                      << " that does not exist";
+        return false;
+    }
+
+    // player is ordering empire to rename a design
+    const auto& empire_known_design_ids = universe.EmpireKnownShipDesignIDs(empire_id);
+    auto design_it = empire_known_design_ids.find(existing_design_id);
+    if (design_it == empire_known_design_ids.end()) {
+        ErrorLogger() << "Empire " << empire_id
+                      << " tried to rename/redescribe a ShipDesign id = " << existing_design_id
+                      << " that this empire hasn't seen";
+        return false;
+    }
+    const ShipDesign* design = universe.GetShipDesign(*design_it);
+    if (!design) {
+        ErrorLogger() << "Empire " << empire_id
+                      << " tried to rename/redescribe a ShipDesign id = " << existing_design_id
+                      << " that doesn't exist (but this empire has seen it)!";
+        return false;
+    }
+    if (design->DesignedByEmpire() != empire_id) {
+        ErrorLogger() << "Empire " << empire_id
+                      << " tried to rename/redescribe a ShipDesign id = " << existing_design_id
+                      << " that isn't owned by this empire!";
+        return false;
+    }
+
+    return true;
 }
 
 ////////////////////////////////////////////////
@@ -1463,10 +1803,7 @@ void ShipDesignOrder::ExecuteImpl(ScriptingContext& context) const {
 ScrapOrder::ScrapOrder(int empire, int object_id, const ScriptingContext& context) :
     Order(empire),
     m_object_id(object_id)
-{
-    if (!Check(empire, object_id, context))
-        return;
-}
+{ Check(empire, object_id, context); }
 
 std::string ScrapOrder::Dump() const
 { return UserString("ORDER_SCRAP"); }
@@ -1537,10 +1874,7 @@ AggressiveOrder::AggressiveOrder(int empire, int object_id, FleetAggression aggr
     Order(empire),
     m_object_id(object_id),
     m_aggression(aggression)
-{
-    if (!Check(empire, object_id, m_aggression, context))
-        return;
-}
+{ Check(empire, object_id, m_aggression, context); }
 
 std::string AggressiveOrder::Dump() const
 { return UserString("ORDER_FLEET_AGGRESSION"); }
@@ -1584,10 +1918,7 @@ GiveObjectToEmpireOrder::GiveObjectToEmpireOrder(int empire, int object_id, int 
     Order(empire),
     m_object_id(object_id),
     m_recipient_empire_id(recipient)
-{
-    if (!Check(empire, object_id, recipient, context))
-        return;
-}
+{ Check(empire, object_id, recipient, context); }
 
 std::string GiveObjectToEmpireOrder::Dump() const
 { return UserString("ORDER_GIVE_TO_EMPIRE"); }
@@ -1599,8 +1930,18 @@ bool GiveObjectToEmpireOrder::Check(int empire_id, int object_id, int recipient_
         ErrorLogger() << "IssueGiveObjectToEmpireOrder : given invalid recipient empire id";
         return false;
     }
+    const auto giver_empire = context.GetEmpire(empire_id);
+    if (!giver_empire) {
+        ErrorLogger() << "IssueGiveObjectToEmpireOrder : given invalid giver empire id";
+        return false;
+    }
+    if (giver_empire->CapitalID() == object_id) {
+        ErrorLogger() << "IssueGiverObjectToEmpireOrder : giving away capital not allowed";
+        return false;
+    }
 
-    auto dip = context.ContextDiploStatus(empire_id, recipient_empire_id);
+
+    const auto dip = context.ContextDiploStatus(empire_id, recipient_empire_id);
     if (dip < DiplomaticStatus::DIPLO_PEACE) {
         ErrorLogger() << "IssueGiveObjectToEmpireOrder : attempting to give to empire not at peace";
         return false;
@@ -1608,7 +1949,7 @@ bool GiveObjectToEmpireOrder::Check(int empire_id, int object_id, int recipient_
 
     const ObjectMap& objects{context.ContextObjects()};
 
-    auto obj = objects.get(object_id);
+    const auto obj = objects.get(object_id);
     if (!obj) {
         ErrorLogger() << "IssueGiveObjectToEmpireOrder : passed invalid object id";
         return false;
@@ -1619,7 +1960,7 @@ bool GiveObjectToEmpireOrder::Check(int empire_id, int object_id, int recipient_
         return false;
     }
 
-    auto system = objects.get<System>(obj->SystemID());
+    const auto system = objects.get<System>(obj->SystemID());
     if (!system) {
         ErrorLogger() << "IssueGiveObjectToEmpireOrder : couldn't get system of object";
         return false;
@@ -1632,7 +1973,7 @@ bool GiveObjectToEmpireOrder::Check(int empire_id, int object_id, int recipient_
         return false;
     }
 
-    auto system_objects = objects.find<const UniverseObject>(system->ObjectIDs());
+    const auto system_objects = objects.findRaw<const UniverseObject>(system->ObjectIDs());
     if (!std::any_of(system_objects.begin(), system_objects.end(),
                      [recipient_empire_id](const auto& o){ return o->Owner() == recipient_empire_id; }))
     {

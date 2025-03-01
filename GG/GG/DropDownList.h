@@ -65,45 +65,45 @@ public:
     typedef boost::signals2::signal<void (bool)>       DropDownOpenedSignalType;
 
     /** basic ctor.  DropDownList retains ownership of \a lb, if it is non-null. */
-    DropDownList(size_t num_shown_elements, Clr color);
+    DropDownList(std::size_t num_shown_elements, Clr color);
     ~DropDownList();
 
-    [[nodiscard]] iterator        CurrentItem() const;            ///< returns the currently selected list item (returns end() if none is selected)
-    [[nodiscard]] std::size_t     CurrentItemIndex() const;       ///< returns the position of the currently selected list item within the list (returns -1 if none is selected)
+    [[nodiscard]] iterator        CurrentItem() const noexcept;                 ///< the currently selected list item (returns end() if none is selected)
+    [[nodiscard]] std::size_t     CurrentItemIndex() const noexcept;            ///< the position of the currently selected list item within the list (returns -1 if none is selected)
 
-    [[nodiscard]] std::size_t     IteratorToIndex(iterator it) const;     ///< returns the position of \a it within the list (returns -1 if \a it == end())
-    [[nodiscard]] iterator        IndexToIterator(std::size_t n) const;   ///< returns an iterator to the row in position \a n (returns end() if \a n is an invalid index)
+    [[nodiscard]] std::size_t     IteratorToIndex(iterator it) const noexcept;  ///< the position of \a it within the list (returns -1 if \a it == end())
+    [[nodiscard]] iterator        IndexToIterator(std::size_t n) const;         ///< iterator to the row in position \a n (returns end() if \a n is an invalid index)
 
-    [[nodiscard]] bool            Empty() const;                  ///< returns true when the list is empty
+    [[nodiscard]] bool            Empty() const noexcept { return LB()->Empty(); } ///< is the list is empty?
 
-    [[nodiscard]] const_iterator  begin() const;                  ///< returns an iterator to the first list row
-    [[nodiscard]] const_iterator  end() const;                    ///< returns an iterator to the imaginary row one past the last
+    [[nodiscard]] auto            begin() const noexcept { return LB()->begin(); } ///< first list row
+    [[nodiscard]] auto            end() const noexcept { return LB()->end(); }     ///< imaginary row one past the last
 
-    [[nodiscard]] const Row&      GetRow(std::size_t n) const;    ///< returns a const reference to the row at index \a n; not range-checked.  \note This function is O(n).
-    [[nodiscard]] bool            Selected(iterator it) const;    ///< returns true if row \a it is selected
-    [[nodiscard]] bool            Selected(std::size_t n) const;  ///< returns true if row at position \a n is selected
-    [[nodiscard]] Clr             InteriorColor() const;          ///< returns the color painted into the client area of the control
+    [[nodiscard]] const Row&      GetRow(std::size_t n) const;    ///< a const reference to the row at index \a n; not range-checked.  \note This function is O(n).
+    [[nodiscard]] bool            Selected(iterator it) const;    ///< true if row \a it is selected
+    [[nodiscard]] bool            Selected(std::size_t n) const;  ///< true if row at position \a n is selected
+    [[nodiscard]] Clr             InteriorColor() const noexcept; ///< the color painted into the client area of the control
 
-    [[nodiscard]] Y               DropHeight() const;             ///< returns the height of the drop-down list
-    [[nodiscard]] bool            Dropped() const;                ///< Return true if the drop down list is open.
+    [[nodiscard]] Y               DropHeight() const noexcept;    ///< the height of the drop-down list
+    [[nodiscard]] bool            Dropped() const noexcept;       ///< true if the drop down list is open.
 
     /** Returns the style flags of the list \see GG::ListBoxStyle */
-    [[nodiscard]] Flags<ListBoxStyle> Style() const;
+    [[nodiscard]] Flags<ListBoxStyle> Style() const noexcept;
 
-    [[nodiscard]] std::size_t     NumRows() const;          ///< returns the total number of items in the list
-    [[nodiscard]] std::size_t     NumCols() const;          ///< returns the total number of columns in each list item
+    [[nodiscard]] std::size_t     NumRows() const noexcept;       ///< returns the total number of items in the list
+    [[nodiscard]] std::size_t     NumCols() const noexcept;       ///< returns the total number of columns in each list item
 
     /** Returns the index of the column used to sort items, when sorting is
         enabled.  \note The sort column is not range checked when it is set by
         the user; it may be >= NumCols(). */
-    [[nodiscard]] std::size_t     SortCol() const;
+    [[nodiscard]] std::size_t     SortCol() const noexcept;
 
     [[nodiscard]] X               ColWidth(std::size_t n) const;     ///< returns the width of column \a n in pixels; not range-checked
     [[nodiscard]] Alignment       ColAlignment(std::size_t n) const; ///< returns the alignment of column \a n; must be LIST_LEFT, LIST_CENTER, or LIST_RIGHT; not range-checked
     [[nodiscard]] Alignment       RowAlignment(iterator it) const;   ///< returns the alignment of row \a n; must be LIST_TOP, LIST_VCENTER, or LIST_BOTTOM; not range-checked
 
-    [[nodiscard]] Pt ClientUpperLeft() const override;
-    [[nodiscard]] Pt ClientLowerRight() const override;
+    [[nodiscard]] Pt ClientUpperLeft() const noexcept override { return UpperLeft() + Pt(X(ListBox::BORDER_THICK), Y(ListBox::BORDER_THICK)); }
+    [[nodiscard]] Pt ClientLowerRight() const noexcept override { return LowerRight() - Pt(X(ListBox::BORDER_THICK), Y(ListBox::BORDER_THICK)); }
 
     /** Return the width of the displayed row.  Override this function if the displayed row is a
         different width than the client width.*/
@@ -126,8 +126,8 @@ public:
     void Render() override;
     /** Resizes the control, ensuring the proper height is maintained based on
         the list's row height. */
-    void SizeMove(const Pt& ul, const Pt& lr) override;
-    void SetColor(Clr c) override;
+    void SizeMove(Pt ul, Pt lr) override;
+    void SetColor(Clr c) noexcept override { LB()->SetColor(c); }
 
     /** Insertion sorts \a row into a sorted list, or inserts into an unsorted
         list before \a it; returns index of insertion point.  This Row becomes
@@ -155,15 +155,15 @@ public:
     std::shared_ptr<Row> Erase(iterator it, bool signal = false); ///< removes and returns \a it from the list, or 0 if no such row exists
     void Clear();                               ///< empties the list
 
-    [[nodiscard]] iterator begin();             ///< returns an iterator to the first list row
-    [[nodiscard]] iterator end();               ///< returns an iterator to the imaginary row one past the last one
+    [[nodiscard]] iterator begin() noexcept;    ///< returns an iterator to the first list row
+    [[nodiscard]] iterator end() noexcept;      ///< returns an iterator to the imaginary row one past the last one
 
     [[nodiscard]] Row& GetRow(std::size_t n);   ///< returns a reference to the Row at row index \a n; not range-checked.  \note This function is O(n).
 
-    void Select(iterator it);            ///< selects row-item \a it in the list
-    void Select(std::size_t n);          ///< selects row-item \a it in the list
+    void Select(iterator it);                   ///< selects row-item \a it in the list
+    void Select(std::size_t n);                 ///< selects row-item \a it in the list
 
-    void SetInteriorColor(Clr c);        ///< sets the color painted into the client area of the control
+    void SetInteriorColor(Clr c) noexcept;      ///< sets the color painted into the client area of the control
 
     /** sets the style flags for the list to \a s (invalidates currently
         selected item). \see GG::ListBoxStyle */
@@ -201,22 +201,26 @@ public:
     /** Set the drop down list to only mouse scroll if it is dropped. */
     void SetOnlyMouseScrollWhenDropped(bool enable);
 
-protected:
-    void LButtonDown(const Pt& pt, Flags<ModKey> mod_keys) override;
-    void KeyPress(Key key, std::uint32_t key_code_point, Flags<ModKey> mod_keys) override;
-    void MouseWheel(const Pt& pt, int move, Flags<ModKey> mod_keys) override;
+    void Close();
 
-    ListBox*        LB();                ///< returns the ListBox used to render the selected row and the popup list
+protected:
+    void LButtonDown(Pt pt, Flags<ModKey> mod_keys) override;
+    void KeyPress(Key key, uint32_t key_code_point, Flags<ModKey> mod_keys) override;
+    void MouseWheel(Pt pt, int move, Flags<ModKey> mod_keys) override;
+
+    ListBox* LB() noexcept; ///< ListBox used to render the selected row and the popup list
 
     virtual void InitBuffer();
     virtual void RenderDisplayedRow();
 
-    GL2DVertexBuffer    m_buffer;
+    GL2DVertexBuffer m_buffer;
 
 private:
-    const ListBox*  LB() const;
+    const ListBox* LB() const noexcept;
 
     const std::shared_ptr<ModalListPicker> m_modal_picker;
+    boost::signals2::scoped_connection m_sel_changed_con;
+    boost::signals2::scoped_connection m_sel_changed_dropped_con;
 };
 
 }

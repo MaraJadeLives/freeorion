@@ -17,7 +17,7 @@ void TestCheckSumFromEnv(const char* env, unsigned int def, unsigned int calcula
         }
     }
     if (force) {
-        BOOST_REQUIRE_MESSAGE(calculated == expected, env << " expected " << expected << " was " << calculated);
+        BOOST_CHECK_MESSAGE(calculated == expected, env << " expected " << expected << " was " << calculated);
     } else {
         BOOST_WARN_MESSAGE(calculated == expected, env << " expected " << expected << " was " << calculated);
     }
@@ -39,19 +39,19 @@ void TestCheckSumFromEnv(const char* env, unsigned int def, unsigned int calcula
  */
 
 BOOST_AUTO_TEST_CASE(compare_checksum) {
-    auto checksums = CheckSumContent();
+    auto checksums = CheckSumContent(m_context.species);
 
-    TestCheckSumFromEnv("FO_CHECKSUM_BUILDING", 7870370, checksums["BuildingTypeManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_ENCYCLOPEDIA", 1090024, checksums["Encyclopedia"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_FIELD", 3780088, checksums["FieldTypeManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_POLICY", 7303441, checksums["PolicyManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_SHIP_HULL", 5932838, checksums["ShipHullManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_SHIP_PART", 1765649, checksums["ShipPartManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_SHIP_DESIGN", 872567, checksums["PredefinedShipDesignManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_SPECIES", 181788, checksums["SpeciesManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_SPECIALS", 9623845, checksums["SpecialsManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_TECH", 5378437, checksums["TechManager"]);
-    TestCheckSumFromEnv("FO_CHECKSUM_NAMED_VALUEREF", 8513318, checksums["NamedValueRefManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_BUILDING", 6401719, checksums["BuildingTypeManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_ENCYCLOPEDIA", 1125744, checksums["Encyclopedia"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_FIELD", 5633696, checksums["FieldTypeManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_POLICY", 5356786, checksums["PolicyManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_SHIP_HULL", 8986067, checksums["ShipHullManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_SHIP_PART", 3729274, checksums["ShipPartManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_SHIP_DESIGN", 878449, checksums["PredefinedShipDesignManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_SPECIES", 4345855, checksums["SpeciesManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_SPECIALS", 3672180, checksums["SpecialsManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_TECH", 1230631, checksums["TechManager"]);
+    TestCheckSumFromEnv("FO_CHECKSUM_NAMED_VALUEREF", 1833808, checksums["NamedValueRefManager"]);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

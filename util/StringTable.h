@@ -4,8 +4,8 @@
 //! @file
 //!     Declares the StringTable class.
 
+#include <boost/unordered_map.hpp>
 #include <string>
-#include <map>
 #include <set>
 #include <mutex>
 #include <memory>
@@ -162,15 +162,12 @@ public:
     [[nodiscard]] std::pair<bool, const std::string&> CheckGet(const char* key) const;
 
     //! Returns the native language name of this StringTable.
-    [[nodiscard]] const std::string& Language() const
-    { return m_language; }
+    [[nodiscard]] const std::string& Language() const noexcept { return m_language; }
 
     //! Returns the translation file name this StringTable was loaded from.
-    [[nodiscard]] const std::string& Filename() const
-    { return m_filename; }
+    [[nodiscard]] const std::string& Filename() const noexcept { return m_filename; }
 
-    [[nodiscard]] const auto& AllStrings() const
-    { return m_strings; }
+    [[nodiscard]] const auto& AllStrings() const noexcept { return m_strings; }
 
     //! Adds the a @p key and @p value pair to this StringTable, and returns a reference
     //! to the newly-added string. If the key already exists, it is overwritten.
@@ -183,7 +180,7 @@ public:
     //!     The value to be stored with index key
     //!
     //! @return
-    //!     A string for @p key containing "ERROR: key"
+    //!     A string for @p key containing value
     const std::string& Add(std::string key, std::string value);
 
 private:
@@ -200,8 +197,30 @@ private:
     //! The native language name of the StringTable translations.
     std::string m_language;
 
+    struct hasher {
+        using is_transparent = void;
+
+        size_t operator()(const auto& key) const
+        { return boost::hash_range(key.begin(), key.end()); }
+
+        size_t operator()(const char* key) const {
+            const std::string_view sv{key};
+            return boost::hash_range(sv.begin(), sv.end());
+        }
+    };
+
+    struct equalizer {
+        using is_transparent = void;
+
+        bool operator()(const auto& lhs, const auto& rhs) const noexcept
+        { return lhs.compare(rhs) == 0; }
+
+        bool operator()(const char* lhs, const auto& rhs) const noexcept
+        { return rhs.compare(lhs) == 0; }
+    };
+
     //! Mapping of translation entry keys to translated strings.
-    std::map<std::string, std::string, std::less<>> m_strings;
+    boost::unordered_map<std::string, std::string, hasher, equalizer> m_strings;
 
     //! True if the StringTable was completely loaded and all references
     //! were successfully resolved.

@@ -4,19 +4,22 @@
 #include "ValueRefPythonParser.h"
 
 struct variable_wrapper {
-    variable_wrapper(ValueRef::ReferenceType reference_type)
-        : m_reference_type(reference_type)
+    explicit variable_wrapper(ValueRef::ReferenceType reference_type,
+                              ValueRef::ContainerType container = ValueRef::ContainerType::NONE) :
+        m_reference_type(reference_type),
+        m_container(container)
     {}
 
-    value_ref_wrapper<int> get_int_property(const char *property) const;
-    value_ref_wrapper<double> get_double_property(const char *property) const;
+    value_ref_wrapper<int> get_int_property(std::string property) const;
+    value_ref_wrapper<double> get_double_property(std::string property) const;
+    value_ref_wrapper<std::string> get_string_property(std::string property) const;
+    variable_wrapper get_variable_property(std::string_view container) const;
 
-    operator condition_wrapper() const;
+    static ValueRef::ContainerType ToContainer(std::string_view s) noexcept;
 
     const ValueRef::ReferenceType m_reference_type;
+    const ValueRef::ContainerType m_container;
 };
-
-condition_wrapper operator&(const variable_wrapper&, const condition_wrapper&);
 
 void RegisterGlobalsSources(boost::python::dict& globals);
 

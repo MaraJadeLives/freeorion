@@ -1,3 +1,6 @@
+from focs._effects import EffectsGroup, Focus, OwnedBy, Planet, SetMaxStockpile, Source, Value
+from focs._tech import *
+
 Tech(
     name="PRO_PREDICTIVE_STOCKPILING",
     description="PRO_PREDICTIVE_STOCKPILING_DESC",
@@ -9,7 +12,7 @@ Tech(
     effectsgroups=[
         # Set initial meters
         EffectsGroup(
-            scope=ProductionCenter & OwnedBy(empire=Source.Owner) & Focus(type="FOCUS_STOCKPILE"),
+            scope=Planet() & OwnedBy(empire=Source.Owner) & Focus(type=["FOCUS_STOCKPILE"]),
             effects=SetMaxStockpile(value=Value + 1),
         )
     ],

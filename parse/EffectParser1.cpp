@@ -24,7 +24,7 @@ namespace parse { namespace detail {
         bool& pass)
     {
         return effect_payload(
-            new Effect::GenerateSitRepMessage(
+            std::make_unique<Effect::GenerateSitRepMessage>(
                 message_string,
                 icon,
                 OpenEnvelopes(message_parameters, pass),
@@ -46,7 +46,7 @@ namespace parse { namespace detail {
         bool& pass)
     {
         return effect_payload(
-            new Effect::GenerateSitRepMessage(
+            std::make_unique<Effect::GenerateSitRepMessage>(
                 message_string,
                 icon,
                 OpenEnvelopes(message_parameters, pass),
@@ -67,7 +67,7 @@ namespace parse { namespace detail {
         bool& pass)
     {
         return effect_payload(
-            new Effect::GenerateSitRepMessage(
+            std::make_unique<Effect::GenerateSitRepMessage>(
                 message_string,
                 icon,
                 OpenEnvelopes(message_parameters, pass),
@@ -186,8 +186,8 @@ namespace parse { namespace detail {
                     >   label(tok.condition_)       >   condition_parser
                     [ _val = construct_GenerateSitRepMessage2_(_a, _b, _c, EmpireAffiliationType::AFFIL_CAN_SEE, _1, _e, _f, _pass) ]
                 )
-                |   (   // condition specified, with an affiliation type of CanSee:
-                    // used to specify CanSee affiliation
+                |   (   // condition specified, with an affiliation type of Human:
+                    // used to specify Human affiliation
                     (   label(tok.affiliation_)     >>  tok.Human_)
                     >   label(tok.condition_)       >   condition_parser
                     [ _val = construct_GenerateSitRepMessage2_(_a, _b, _c, EmpireAffiliationType::AFFIL_HUMAN, _1, _e, _f, _pass) ]

@@ -18,37 +18,37 @@
 namespace {
     // These margins determine how we avoid drawing children on top of the
     // bevel in the lower right corner.
-    constexpr GG::X BEVEL_MARGIN_X(6);
+    constexpr GG::X BEVEL_MARGIN_X{6};
 
     // The height of the space where the display option buttons are put
-    GG::Y OPTION_BAR_HEIGHT(25);
+    constexpr GG::Y OPTION_BAR_HEIGHT{25};
     // The height of option buttons
-    constexpr GG::Y OPTION_BUTTON_HEIGHT(20);
-    constexpr GG::X OPTION_BUTTON_PADDING(8);
+    constexpr GG::Y OPTION_BUTTON_HEIGHT{20};
+    constexpr GG::X OPTION_BUTTON_PADDING{8};
 
     // How much space to leave for the y axis
-    constexpr GG::X AXIS_WIDTH(10);
+    constexpr GG::X AXIS_WIDTH{10};
     // How much space to leave for the x axis
     // at the top of a SideBar
-    constexpr GG::Y AXIS_HEIGHT(10);
+    constexpr GG::Y AXIS_HEIGHT{10};
 
     // Space around the labels of the axes
-    constexpr GG::X Y_AXIS_LABEL_MARGIN(3);
-    constexpr GG::Y X_AXIS_LABEL_MARGIN(8);
+    constexpr GG::X Y_AXIS_LABEL_MARGIN{3};
+    constexpr GG::Y X_AXIS_LABEL_MARGIN{8};
 
     // Margin between x-axis label and whatever is above the side bars top
-    constexpr GG::Y SIDE_BAR_UP_MARGIN(5);
+    constexpr GG::Y SIDE_BAR_UP_MARGIN{5};
 
     // Space between side boxes
-    constexpr GG::Y SIDE_BOX_MARGIN(8);
+    constexpr GG::Y SIDE_BOX_MARGIN{8};
 
-    constexpr int MIN_SIDE_BAR_WIDTH = 100;
-    constexpr int MIN_SIDE_BAR_HEIGHT = 40;
+    constexpr GG::X MIN_SIDE_BAR_WIDTH{100};
+    constexpr GG::Y MIN_SIDE_BAR_HEIGHT{40};
 
     // The participant bar height when its parent side bar height is
     // MIN_SIDE_BAR_HEIGHT.
     constexpr int MIN_PARTICIPANT_BAR_HEIGHT =
-        MIN_SIDE_BAR_HEIGHT - Value(AXIS_HEIGHT) - Value(X_AXIS_LABEL_MARGIN) - Value(SIDE_BAR_UP_MARGIN);
+        Value(MIN_SIDE_BAR_HEIGHT) - Value(AXIS_HEIGHT) - Value(X_AXIS_LABEL_MARGIN) - Value(SIDE_BAR_UP_MARGIN);
 
     constexpr float EPSILON = 0.00001f;
 
@@ -87,7 +87,7 @@ namespace {
     bool temp_bool = RegisterOptions(&AddOptions);
 
     // Removes the space taken up by axes of a sidebox from size.
-    GG::Pt AdjustForAxes(const GG::Pt& size) {
+    GG::Pt AdjustForAxes(GG::Pt size) {
         GG::Pt adjusted(size);
         adjusted.x = std::max( GG::X0, size.x - AXIS_WIDTH - Y_AXIS_LABEL_MARGIN);
         adjusted.y = std::max( GG::Y0, size.y - 2 * (SIDE_BAR_UP_MARGIN + AXIS_HEIGHT + X_AXIS_LABEL_MARGIN));
@@ -104,7 +104,7 @@ class BarSizer {
 public:
     typedef std::map<int, CombatSummary> CombatSummaryMap;
 
-    BarSizer(const CombatSummaryMap& combat_summaries , const GG::Pt& available_size):
+    BarSizer(const CombatSummaryMap& combat_summaries , GG::Pt available_size):
         m_max_total_max_health(-1.0f),
         m_max_units_on_a_side(-1),
         m_sum_of_max_max_healths(0),
@@ -146,40 +146,40 @@ public:
         if ( side_summary_it == m_summaries.end() ) {
             ErrorLogger() << "The empire of the object " << participant.object_id
                           << " is not known to be in this battle. (empire_id = " << participant.empire_id << ")";
-            return GG::Pt(GG::X(10), GG::Y(10));
+            return GG::Pt(GG::X{10}, GG::Y{10});
         }
 
         const CombatSummary& side_summary = side_summary_it->second;
 
         GG::X width;
-        if ( participant.current_health > 0.0 ) {
-            width = CalculateAliveWidth( participant, total_space );
+        if (participant.current_health > 0.0) {
+            width = CalculateAliveWidth(participant, total_space);
         } else {
-            width = CalculateDeadWidth( participant, total_space );
+            width = CalculateDeadWidth(participant, total_space);
         }
         GG::Y height;
         if ( Get( TOGGLE_BAR_HEIGHT_PROPORTIONAL) ) {
-            height = ( (participant.max_health / side_summary.max_max_health) * total_space.y );
+            height = GG::ToY((participant.max_health / side_summary.max_max_health) * total_space.y);
         } else {
             height = total_space.y;
         }
 
-        return GG::Pt(std::max(width, GG::X(3)), height);
+        return GG::Pt(std::max(width, GG::X{3}), height);
     }
 
-    GG::X CalculateAliveWidth( const ParticipantSummary& participant, const GG::Pt& total_space ) const {
-        if ( Get(TOGGLE_BAR_WIDTH_PROPORTIONAL) ) {
-            return GG::X( (participant.current_health / m_max_total_max_health) * total_space.x );
+    GG::X CalculateAliveWidth(const ParticipantSummary& participant, GG::Pt total_space) const {
+        if (Get(TOGGLE_BAR_WIDTH_PROPORTIONAL)) {
+            return GG::X((participant.current_health / m_max_total_max_health) * total_space.x);
         } else {
-            return GG::X( total_space.x / m_max_units_on_a_side );
+            return GG::X(total_space.x / m_max_units_on_a_side);
         }
     }
 
-    GG::X CalculateDeadWidth( const ParticipantSummary& participant, const GG::Pt& total_space) const {
-        if ( Get(TOGGLE_BAR_WIDTH_PROPORTIONAL) ) {
-            return GG::X( (participant.max_health / m_max_total_max_health) * total_space.x );
+    GG::X CalculateDeadWidth( const ParticipantSummary& participant, GG::Pt total_space) const {
+        if (Get(TOGGLE_BAR_WIDTH_PROPORTIONAL)) {
+            return GG::X((participant.max_health / m_max_total_max_health) * total_space.x);
         } else {
-            return GG::X( total_space.x / m_max_units_on_a_side );
+            return GG::X(total_space.x / m_max_units_on_a_side);
         }
     }
 
@@ -222,7 +222,7 @@ public:
 
         GG::Y reqd_available_total_height(reqd_available_client_height + (SIDE_BOX_MARGIN + AXIS_HEIGHT + X_AXIS_LABEL_MARGIN + SIDE_BAR_UP_MARGIN) * static_cast<int>(m_summaries.size()) + SIDE_BOX_MARGIN);
 
-        return GG::Pt(GG::X(MIN_SIDE_BAR_WIDTH), reqd_available_total_height);
+        return GG::Pt(MIN_SIDE_BAR_WIDTH, reqd_available_total_height);
     }
 
 private:
@@ -243,7 +243,7 @@ private:
         auto summary_it = m_summaries.find(empire_id);
 
         if (Get(TOGGLE_GRAPH_HEIGHT_PROPORTIONAL) && summary_it != m_summaries.end()) {
-            calculated_height = m_available_participant_bar_height * summary_it->second.max_max_health / m_sum_of_max_max_healths;
+            calculated_height = GG::ToY(m_available_participant_bar_height * summary_it->second.max_max_health / m_sum_of_max_max_healths);
         } else {
             calculated_height = m_available_participant_bar_height / static_cast<int>(m_summaries.size());
         }
@@ -251,8 +251,8 @@ private:
         // Reconstruct the total size for this side bar from the available
         // total width and the calculated client height (which is converted to
         // the total height here).
-        return GG::Pt( std::max(GG::X(MIN_SIDE_BAR_WIDTH), m_available_side_bar_space.x),
-                       std::max(GG::Y(MIN_SIDE_BAR_HEIGHT), calculated_height + (AXIS_HEIGHT + X_AXIS_LABEL_MARGIN + SIDE_BAR_UP_MARGIN)) );
+        return GG::Pt( std::max(MIN_SIDE_BAR_WIDTH, m_available_side_bar_space.x),
+                       std::max(MIN_SIDE_BAR_HEIGHT, calculated_height + (AXIS_HEIGHT + X_AXIS_LABEL_MARGIN + SIDE_BAR_UP_MARGIN)) );
     }
 };
 
@@ -262,16 +262,13 @@ public:
     ParticipantBar(const ParticipantSummary& participant, const BarSizer& sizer):
         GG::Wnd(GG::X0, GG::Y0, GG::X1, GG::Y1, GG::INTERACTIVE),
         m_participant(participant),
-        m_sizer(sizer),
-        m_hovered(false)
+        m_sizer(sizer)
     {
-        const Universe& u = GetUniverse();
-        auto object = u.Objects().get(participant.object_id);
-        if (object) {
-            SetBrowseText(object->PublicName(ClientApp::GetApp()->EmpireID(), u) + " " +
-                          DoubleToString(participant.current_health, 3, false) + "/" +
-                          DoubleToString(participant.max_health, 3, false)
-            );
+        const ScriptingContext& context = IApp::GetApp()->GetContext();
+        if (auto object = context.ContextObjects().getRaw(participant.object_id)) {
+            SetBrowseText(object->PublicName(ClientApp::GetApp()->EmpireID(), context.ContextUniverse()) +
+                          " " + DoubleToString(participant.current_health, 3, false) +
+                          "/" + DoubleToString(participant.max_health, 3, false));
         }
         SetBrowseModeTime(GetOptionsDB().Get<int>("ui.tooltip.delay"));
 
@@ -282,7 +279,7 @@ public:
     }
 
     void Render() override {
-        GG::Clr base_color = Alive() ? m_wound_color : m_dead_color;
+        const GG::Clr base_color = Alive() ? m_wound_color : m_dead_color;
 
         // Always draw the red background, health will cover it
         GG::FlatRectangle(ClientUpperLeft(), ClientLowerRight(), base_color, m_hovered ? GG::CLR_WHITE : GG::CLR_BLACK, 1);
@@ -300,17 +297,17 @@ public:
             }
         } else {
             if (Alive()) {
-                GG::Y health_height( (m_participant.current_health / m_participant.max_health) * Value(ClientHeight()) );
+                GG::Y health_height(GG::ToY(m_participant.current_health / m_participant.max_health * ClientHeight()));
                 GG::FlatRectangle(GG::Pt(ClientUpperLeft().x, ClientLowerRight().y - health_height),
                                          ClientLowerRight(), m_health_color, GG::CLR_ZERO, 1);
             }
         }
     }
 
-    void MouseEnter(const GG::Pt& pt, GG::Flags<GG::ModKey> mod_keys) override
+    void MouseEnter(GG::Pt, GG::Flags<GG::ModKey>) noexcept override
     { m_hovered = true; }
 
-    void MouseLeave() override
+    void MouseLeave() noexcept override
     { m_hovered = false; }
 
     /// Resizes the bar to have a width and height based on the
@@ -325,13 +322,13 @@ public:
     }
 
     /// Tells whether this participant is still alive
-    bool Alive() const
+    bool Alive() const noexcept
     { return m_participant.current_health > 0.0; }
 
 private:
     const ParticipantSummary& m_participant;
     const BarSizer& m_sizer;
-    bool m_hovered;
+    bool m_hovered = false;
     GG::Clr m_dead_color;
     GG::Clr m_wound_color;
     GG::Clr m_health_color;
@@ -408,19 +405,19 @@ public:
         m_y_axis_label->MoveTo(GG::Pt(-m_y_axis_label->MinUsableSize().x / 2 - AXIS_WIDTH, Height()/2 - m_y_axis_label->Height()/2));
     }
 
-    void SizeMove(const GG::Pt& ul, const GG::Pt& lr) override {
+    void SizeMove(GG::Pt ul, GG::Pt lr) override {
         GG::Wnd::SizeMove(ul, lr);
         DoLayout();
     }
 
-    GG::Pt RelativeClientUpperLeft() const {
+    GG::Pt RelativeClientUpperLeft() const noexcept {
         GG::Pt ul{ GG::X0, GG::Y0 };
         ul.x += AXIS_WIDTH + m_y_axis_label->MinUsableSize().x + Y_AXIS_LABEL_MARGIN;
         ul.y += SIDE_BAR_UP_MARGIN + AXIS_HEIGHT + X_AXIS_LABEL_MARGIN;
         return ul;
     }
 
-    GG::Pt ClientUpperLeft() const override
+    GG::Pt ClientUpperLeft() const noexcept override
     { return GG::Wnd::UpperLeft() + RelativeClientUpperLeft(); }
 
 private:
@@ -496,7 +493,7 @@ public:
     void DoLayout() {
         auto cui_font = ClientUI::GetFont();
 
-        GG::Pt pos(GG::X(0), GG::Y(0));
+        GG::Pt pos(GG::X0, GG::Y0);
         for (auto& data : m_toggles) {
             if (!data->button->Children().empty()) {
                 //Assume first child of the button is the label
@@ -640,14 +637,14 @@ void GraphicalSummaryWnd::MakeSummaries(int log_id) {
         for (int object_id : log->object_ids) {
             if (object_id < 0)
                 continue;   // fighters and invalid objects
-            auto object = Objects().get(object_id);
+            auto object = ClientApp::GetApp()->GetContext().ContextObjects().get(object_id);
             if (!object) {
                 ErrorLogger() << "GraphicalSummaryWnd::MakeSummaries couldn't find object with id: " << object_id;
                 continue;
             }
 
             int owner_id = object->Owner();
-            if (!m_summaries.count(owner_id))
+            if (!m_summaries.contains(owner_id))
                 m_summaries[owner_id] = CombatSummary(owner_id);
 
             auto map_it = log->participant_states.find(object_id);
@@ -678,7 +675,7 @@ void GraphicalSummaryWnd::DeleteSideBars() {
 void GraphicalSummaryWnd::GenerateGraph() {
     DeleteSideBars();
 
-    m_sizer.reset(new BarSizer(m_summaries, ClientSize()));
+    m_sizer = std::make_unique<BarSizer>(m_summaries, ClientSize());
 
     for (auto& summary : m_summaries) {
         if (summary.second.total_max_health > EPSILON) {

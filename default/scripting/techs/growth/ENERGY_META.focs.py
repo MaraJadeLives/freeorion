@@ -1,6 +1,25 @@
-from common.base_prod import INDUSTRY_PER_POP, RESEARCH_PER_POP, TECH_COST_MULTIPLIER
-from common.misc import PLANET_DEFENSE_FACTOR, PLANET_SHIELD_FACTOR
-from common.priorities import (
+from focs._effects import (
+    EffectsGroup,
+    Focus,
+    Happiness,
+    NamedReal,
+    NamedRealLookup,
+    OwnedBy,
+    Planet,
+    SetMaxDefense,
+    SetMaxFuel,
+    SetMaxShield,
+    SetTargetIndustry,
+    SetTargetResearch,
+    Ship,
+    Source,
+    Target,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import INDUSTRY_PER_POP, RESEARCH_PER_POP, TECH_COST_MULTIPLIER
+from macros.misc import PLANET_DEFENSE_FACTOR, PLANET_SHIELD_FACTOR
+from macros.priorities import (
     TARGET_AFTER_SCALING_PRIORITY,
     TARGET_EARLY_BEFORE_SCALING_PRIORITY,
 )
@@ -10,7 +29,7 @@ Tech(
     description="GRO_ENERGY_META_DESC",
     short_description="VARIOUS_SHORT_DESC",
     category="GROWTH_CATEGORY",
-    researchcost=200 * TECH_COST_MULTIPLIER,
+    researchcost=330 * TECH_COST_MULTIPLIER,
     researchturns=15,
     tags=["PEDIA_GROWTH_CATEGORY"],
     prerequisites=[
@@ -42,9 +61,9 @@ Tech(
             ),
         ),
         EffectsGroup(
-            scope=ProductionCenter
+            scope=Planet()
             & OwnedBy(empire=Source.Owner)
-            & Focus(type="FOCUS_INDUSTRY")
+            & Focus(type=["FOCUS_INDUSTRY"])
             & Happiness(low=NamedReal(name="GRO_ENERGY_META_MIN_STABILITY", value=20)),
             priority=TARGET_EARLY_BEFORE_SCALING_PRIORITY,
             effects=SetTargetIndustry(
@@ -54,9 +73,9 @@ Tech(
             ),
         ),
         EffectsGroup(
-            scope=ProductionCenter
+            scope=Planet()
             & OwnedBy(empire=Source.Owner)
-            & Focus(type="FOCUS_RESEARCH")
+            & Focus(type=["FOCUS_RESEARCH"])
             & Happiness(low=NamedRealLookup(name="GRO_ENERGY_META_MIN_STABILITY")),
             priority=TARGET_EARLY_BEFORE_SCALING_PRIORITY,
             effects=SetTargetResearch(

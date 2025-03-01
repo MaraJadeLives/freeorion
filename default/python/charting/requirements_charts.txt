@@ -1,2 +1,2 @@
 altair
-streamlit
+streamlit==1.37.0

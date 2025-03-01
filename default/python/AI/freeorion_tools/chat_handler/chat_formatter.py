@@ -10,11 +10,11 @@ class ChatFormatter:
     @abstractmethod
     def _wrap_to_tag(self, tag: (str, str), message: Any) -> str:
         open_, close = tag
-        return "<%s>%s</%s>" % (open_, message, close)
+        return f"<{open_}>{message}</{close}>"
 
     @abstractmethod
     def _get_tag_rgb(self, color: (int, int, int, int)) -> (str, str):
-        return "rgba %s %s %s %s" % color, "rgba"
+        return "rgba {} {} {} {}".format(*color), "rgba"
 
     @abstractmethod
     def _get_underline_tag(self) -> (str, str):

@@ -131,22 +131,21 @@ namespace {
         // set option default value based on system locale
         auto default_stringtable_path = GetDefaultStringTableFileName();
         auto default_stringtable_path_string = PathToString(default_stringtable_path);
-        GetOptionsDB().SetDefault("resource.stringtable.path", PathToString(default_stringtable_path));
+        GetOptionsDB().SetDefault("resource.stringtable.path", default_stringtable_path_string);
 
         // get option-configured stringtable path. may be the default empty
         // string (set by call to:   db.Add<std::string>("resource.stringtable.path" ...
         // or this may have been overridden from one of the config XML files or from
         // a command line argument.
         std::string option_path = GetOptionsDB().Get<std::string>("resource.stringtable.path");
-        boost::filesystem::path stringtable_path{option_path};
+        boost::filesystem::path stringtable_path = FilenameToPath(option_path);
 
         // verify that option-derived stringtable file exists, with fallbacks
         DebugLogger() << "Stringtable option path: " << option_path;
 
         if (option_path.empty()) {
             DebugLogger() << "Stringtable option path not specified yet, using default: " << default_stringtable_path_string;
-            stringtable_path = std::move(default_stringtable_path_string);
-            GetOptionsDB().Set("resource.stringtable.path", PathToString(stringtable_path));
+            GetOptionsDB().Set("resource.stringtable.path", default_stringtable_path_string);
             stringtable_filename_init = true;
             return;
         }
@@ -156,12 +155,12 @@ namespace {
         if (!IsExistingFile(stringtable_path)) {
             set_option = true;
             // try interpreting path as a filename located in the stringtables directory
-            stringtable_path = GetResourceDir() / "stringtables" / option_path;
+            stringtable_path = GetResourceDir() / "stringtables" / FilenameToPath(option_path);
         }
         if (!IsExistingFile(stringtable_path)) {
             set_option = true;
             // try interpreting path as directory and filename in resources directory
-            stringtable_path = GetResourceDir() / option_path;
+            stringtable_path = GetResourceDir() / FilenameToPath(option_path);
         }
         if (!IsExistingFile(stringtable_path)) {
             set_option = true;
@@ -194,7 +193,6 @@ namespace {
         SS&& filename, std::shared_lock<std::shared_mutex>& access_lock,
         std::shared_ptr<const StringTable> fallback = nullptr)
     {
-
         if (auto it = stringtables.find(filename); it != stringtables.end())
             return it->second;
 
@@ -279,9 +277,9 @@ const std::locale& GetLocale(std::string_view name) {
         static boost::locale::generator locale_gen(locale_backend);
         locale_gen.locale_cache_enabled(true);
         try {
-            auto retval = locale_gen.generate(name_str);
-            std::use_facet<boost::locale::info>(retval);
-            return retval;
+            auto retval2 = locale_gen.generate(name_str);
+            std::use_facet<boost::locale::info>(retval2);
+            return retval2;
         } catch (...) {
             return std::locale::classic();
         }
@@ -295,15 +293,12 @@ void FlushLoadedStringTables() {
     stringtables.clear();
 }
 
-const std::map<std::string, std::string, std::less<>>& AllStringtableEntries(bool default_table) {
+AllStringsResultT& AllStringtableEntries(bool default_table) {
     std::shared_lock stringtable_lock(stringtable_access_mutex);
-    if (default_table) {
-        auto& retval = GetDevDefaultStringTable(stringtable_lock).AllStrings();
-        return retval;
-    } else {
-        auto& retval = GetStringTable(stringtable_lock).AllStrings();
-        return retval;
-    }
+    if (default_table)
+        return GetDevDefaultStringTable(stringtable_lock).AllStrings();
+    else
+        return GetStringTable(stringtable_lock).AllStrings();
 }
 
 const std::string& UserString(const std::string& str) {
@@ -403,7 +398,7 @@ std::vector<std::string> UserStringList(const std::string& key) {
     // split big string into newline-separated substrings strings
     std::string item;
     while (std::getline(template_stream, item))
-        result.push_back(std::move(item));
+        result.push_back(item);
     return result;
 }
 
@@ -508,11 +503,25 @@ namespace {
 
         return mag;
     }
+
+    [[nodiscard]] constexpr std::string_view UnitPostFix(int unit_pow10) noexcept {
+        // append base scale SI prefix (as postfix)
+        switch (unit_pow10) {
+        case -15: return "f"; break;        // femto
+        case -12: return "p"; break;        // pico
+        case -9:  return "n"; break;        // nano
+        case -6:  return "\xC2\xB5"; break; // micro / µ in UTF-8
+        case -3:  return "m"; break;        // milli
+        case 3:   return "k"; break;        // kilo
+        case 6:   return "M"; break;        // Mega
+        case 9:   return "G"; break;        // Giga
+        case 12:  return "T"; break;        // Tera
+        default:  return {};  break;
+        }
+    }
 }
 
 std::string DoubleToString(double val, int digits, bool always_show_sign) {
-    std::string text;
-
     // minimum digits is 2. Fewer than this and things can't be sensibly displayed.
     // eg. 300 with 2 digits is 0.3k. With 1 digits, it would be unrepresentable.
     digits = std::max(digits, 2);
@@ -525,10 +534,12 @@ std::string DoubleToString(double val, int digits, bool always_show_sign) {
 
     // early termination if magnitude is 0
     if (mag == 0.0 || RoundMagnitude(mag, digits + 1) == 0.0) {
-        std::string format = "%1." + std::to_string(digits - 1) + "f";
-        text += (boost::format(format) % mag).str();
-        return text;
+        std::string format = "%1." + std::to_string(digits - 1) + "f"; // TODO: avoid extra string here?
+        return (boost::format(format) % mag).str();
     }
+
+    std::string text;
+    text.reserve(static_cast<std::size_t>(digits)+3u);
 
     // prepend signs if neccessary
     int effective_sign = EffectiveSign(val);
@@ -537,9 +548,6 @@ std::string DoubleToString(double val, int digits, bool always_show_sign) {
     else if (always_show_sign)
         text += "+";
 
-    if (mag > LARGE_UI_DISPLAY_VALUE)
-        mag = LARGE_UI_DISPLAY_VALUE;
-
     // if value is effectively 0, avoid unnecessary later processing
     if (effective_sign == 0) {
         text = "0.0";
@@ -547,6 +555,9 @@ std::string DoubleToString(double val, int digits, bool always_show_sign) {
             text += "0";  // fill in 0's to required number of digits
         return text;
     }
+
+    if (mag > LARGE_UI_DISPLAY_VALUE)
+        mag = LARGE_UI_DISPLAY_VALUE;
 
     //std::cout << std::endl << "DoubleToString val: " << val << " digits: " << digits << std::endl;
     const double initial_mag = mag;
@@ -586,7 +597,7 @@ std::string DoubleToString(double val, int digits, bool always_show_sign) {
     if (unit_pow10 < 0)
         unit_pow10 = 0;
 
-    int lowest_digit_pow10 = pow10 - digits + 1;
+    const int lowest_digit_pow10 = pow10 - digits + 1;
 
     //std::cout << "unit power of 10: " << unit_pow10
     //          << "  pow10 digits above pow1000: " << pow10_digits_above_pow1000
@@ -594,7 +605,7 @@ std::string DoubleToString(double val, int digits, bool always_show_sign) {
     //          << std::endl;
 
     // fraction digits:
-    int fraction_digits = std::max(0, std::min(digits - 1, unit_pow10 - lowest_digit_pow10));
+    const int fraction_digits = std::max(0, std::min(digits - 1, unit_pow10 - lowest_digit_pow10));
     //std::cout << "fraction_digits: " << fraction_digits << std::endl;
 
 
@@ -603,43 +614,10 @@ std::string DoubleToString(double val, int digits, bool always_show_sign) {
     mag /= pow(10.0, static_cast<double>(unit_pow10));
 
 
-    std::string format;
-    format += "%" + std::to_string(digits) + "." +
-                    std::to_string(fraction_digits) + "f";
+    const std::string format{"%" + std::to_string(digits) + "." + std::to_string(fraction_digits) + "f"};
     text += (boost::format(format) % mag).str();
+    text.append(UnitPostFix(unit_pow10));
 
-    // append base scale SI prefix (as postfix)
-    switch (unit_pow10) {
-    case -15:
-        text += "f";        // femto
-        break;
-    case -12:
-        text += "p";        // pico
-        break;
-    case -9:
-        text += "n";        // nano
-        break;
-    case -6:
-        text += "\xC2\xB5"; // micro / µ in UTF-8
-        break;
-    case -3:
-        text += "m";        // milli
-        break;
-    case 3:
-        text += "k";        // kilo
-        break;
-    case 6:
-        text += "M";        // Mega
-        break;
-    case 9:
-        text += "G";        // Giga
-        break;
-    case 12:
-        text += "T";        // Tera
-        break;
-    default:
-        break;
-    }
     return text;
 }
 

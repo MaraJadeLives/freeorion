@@ -1,15 +1,16 @@
 import freeOrionAIInterface as fo
 from logging import debug
 
-import AIDependencies
 from AIDependencies import Tags
+from buildings import Shipyard
 from colonization.claimed_stars import has_claimed_star
-from colonization.colony_score import MINIMUM_COLONY_SCORE, debug_rating, use_new_rating
+from colonization.colony_score import MINIMUM_COLONY_SCORE, debug_rating
 from common.fo_typing import SpeciesName
 from empire.pilot_rating import best_pilot_rating, medium_pilot_rating
 from freeorion_tools import (
     get_species_attack_troops,
     get_species_fuel,
+    get_species_ship_shields,
     get_species_tag_grade,
     tech_is_complete,
     tech_soon_available,
@@ -20,19 +21,13 @@ GOOD_PILOT_RATING_OLD = 4.0
 GREAT_PILOT_RATING_OLD = 6.0
 ULT_PILOT_RATING_OLD = 12.0
 
-_pilot_tags_rating_old = {
-    "NO": 1e-8,
-    "BAD": 0.75,
-    "GOOD": GOOD_PILOT_RATING_OLD,
-    "GREAT": GREAT_PILOT_RATING_OLD,
-    "ULTIMATE": ULT_PILOT_RATING_OLD,
-}
-
 BAD_PILOT_RATING = 0.4
 GOOD_PILOT_RATING = 2.0
 GREAT_PILOT_RATING = 3.0
 ULT_PILOT_RATING = 4.0
-GOOD_SHIELD_BONUS = 0.3
+# shield vales: -0.5 to 1.5, so rating effect is -0.3 to 0.9
+# worth of shields is not easy to compare with weapons, but ultimate shields should be close to one weapon level
+SHIELD_SCALING = 0.6
 DETECTION_SCALING = 0.08  # detection values: -1 to 3, so rating effect is -0.08 to 0.32
 FUEL_SCALING = 0.1  # fuel values: -0.5 to 1.5, so rating effect is -0.05 to 0.15
 # troop values range from 0.5 to 2 (or 3, but there is currently no species with ultimate troops)
@@ -54,34 +49,12 @@ _detection_tags_rating = {
 }
 
 
-def rate_piloting_tag(species_name: str) -> float:
-    """
-    Wrapper while we have both rating functions.
-    This ensures survey_universe uses the same rating function like colonization.
-    """
-    if use_new_rating:
-        return rate_piloting(species_name)
-    else:
-        return rate_piloting_old(species_name)
-
-
-@cache_for_session
-def rate_piloting_old(species_name: str) -> float:
-    """
-    Almost the old function.
-    Does the shield bonus stuff here instead of only in survey_universe, though.
-    """
-    weapon_grade_tag = get_species_tag_grade(species_name, Tags.WEAPONS)
-    result = _pilot_tags_rating_old.get(weapon_grade_tag, 1.0)
-    if species_name == "SP_ACIREMA":
-        result += 1
-    return result
-
-
 @cache_for_session
 def rate_piloting(species_name: SpeciesName) -> float:
     """
-    Rate species as pilots. Does also include small modifications for fuel and detections skills.
+    Rate species as pilots.
+    Weapon skill is the most important factor, shields are also a major factor.
+    Does also include small modifications for fuel and detections skills and even disliking shipyards.
     """
     # TODO rate for different purposes, e.g. when building ships, dislikes should not be considered,
     #  when building scouts, vision is very important, etc.
@@ -89,16 +62,12 @@ def rate_piloting(species_name: SpeciesName) -> float:
     if not species or not species.canProduceShips:
         return 0.0
     weapon_grade_tag = get_species_tag_grade(species_name, Tags.WEAPONS)
-    shield_grade_tag = get_species_tag_grade(species_name, Tags.SHIELDS)
     weapon_val = _pilot_tags_rating.get(weapon_grade_tag, 1.0)
-    # only GOOD_SHIELDS exists so far
-    # TODO: reduce with tech, unlike weapon skill, shield bonus gets less effective with better weapons.
-    #  Cannot use cache_for_session then anymore, of course
-    shield_value = GOOD_SHIELD_BONUS if shield_grade_tag == "GOOD" else 0
+    shield_value = SHIELD_SCALING * get_species_ship_shields(species_name)
     detection_val = detection_value(species_name) * DETECTION_SCALING
     # TODO add something for Sly and Laenfa ability to regenerate fuel quickly in certain systems?
     fuel_val = get_species_fuel(species_name) * FUEL_SCALING
-    dislikes = sum(1 for bld in AIDependencies.SHIP_FACILITIES if bld in species.dislikes)
+    dislikes = sum(1 for bld in Shipyard if bld.value in species.dislikes)
     # basic shipyard is specifically important, cannot build any ships without it
     discount = 0.93 if "BLD_SHIPYARD_BASE" in species.dislikes else 0.96
     result = (weapon_val + shield_value + detection_val + fuel_val) * discount**dislikes
@@ -124,7 +93,7 @@ def rate_planetary_piloting(pid: int) -> float:
     planet = universe.getPlanet(pid)
     if not planet:
         return 0.0
-    return rate_piloting_tag(planet.speciesName)
+    return rate_piloting(planet.speciesName)
 
 
 def _check_star_for_energy_hulls(

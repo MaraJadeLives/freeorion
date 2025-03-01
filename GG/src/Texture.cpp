@@ -12,17 +12,13 @@
 #include <iostream>
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/filesystem/operations.hpp>
+#include <boost/filesystem/fstream.hpp>
 #include <boost/gil/extension/dynamic_image/any_image.hpp>
 #if GG_HAVE_LIBTIFF
 # include <boost/gil/extension/io/tiff_dynamic_io.hpp>
 #endif
 #if GG_HAVE_LIBPNG
 # include <boost/gil/extension/io/png.hpp>
-#endif
-#if BOOST_VERSION >= 107400
-#include <boost/variant2/variant.hpp>
-#elif BOOST_VERSION >= 107000
-#include <boost/variant/get.hpp>
 #endif
 #include <GG/GLClientAndServerBuffer.h>
 #include <GG/Texture.h>
@@ -33,9 +29,9 @@ using namespace GG;
 
 namespace {
     template <typename T>
-    T PowerOfTwo(T input)
+    constexpr T PowerOfTwo(T input)
     {
-        T value(1);
+        T value{1};
         while (value < input)
             value *= 2;
         return value;
@@ -50,45 +46,6 @@ Texture::Texture()
 
 Texture::~Texture()
 { Clear(); }
-
-const boost::filesystem::path& Texture::Path() const
-{ return m_path; }
-
-GLenum Texture::WrapS() const
-{ return m_wrap_s; }
-
-GLenum Texture::WrapT() const
-{ return m_wrap_t; }
-
-GLenum Texture::MinFilter() const
-{ return m_min_filter; }
-
-GLenum Texture::MagFilter() const
-{ return m_mag_filter; }
-
-unsigned int Texture::BytesPP() const
-{ return m_bytes_pp; }
-
-X Texture::Width() const
-{ return m_width; }
-
-Y Texture::Height() const
-{ return m_height; }
-
-bool Texture::MipMapped() const
-{ return m_mipmaps; }
-
-GLuint Texture::OpenGLId() const
-{ return m_opengl_id; }
-
-const GLfloat* Texture::DefaultTexCoords() const
-{ return m_tex_coords; }
-
-X Texture::DefaultWidth() const
-{ return m_default_width; }
-
-Y Texture::DefaultHeight() const
-{ return m_default_height; }
 
 void Texture::Blit(const GL2DVertexBuffer& vertex_buffer,
                    const GLTexCoordBuffer& tex_coord_buffer,
@@ -117,7 +74,7 @@ void Texture::Blit(const GL2DVertexBuffer& vertex_buffer,
     glBindTexture(GL_TEXTURE_2D, m_opengl_id);
     vertex_buffer.activate();
     tex_coord_buffer.activate();
-    glDrawArrays(GL_QUADS, 0, vertex_buffer.size());
+    glDrawArrays(GL_QUADS, 0, static_cast<GLsizei>(vertex_buffer.size()));
 
     if (need_min_filter_change)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, m_min_filter);
@@ -129,8 +86,7 @@ void Texture::Blit(const GL2DVertexBuffer& vertex_buffer,
     glPopAttrib();
 }
 
-void Texture::OrthoBlit(const Pt& pt1, const Pt& pt2,
-                        const GLfloat* tex_coords/* = 0*/) const
+void Texture::OrthoBlit(Pt pt1, Pt pt2, std::array<GLfloat, 4> tex_coords) const
 {
     if (m_opengl_id == 0)
         return;
@@ -142,12 +98,18 @@ void Texture::OrthoBlit(const Pt& pt1, const Pt& pt2,
     GLTexCoordBuffer tex_coord_buffer;
     tex_coord_buffer.reserve(4);
     InitBuffer(vertex_buffer, pt1, pt2);
-    InitBuffer(tex_coord_buffer, tex_coords ? tex_coords : m_tex_coords);   // use default texture coords when not given any others
+    InitBuffer(tex_coord_buffer, tex_coords);
 
     Blit(vertex_buffer, tex_coord_buffer, render_scaled);
 }
 
-void Texture::InitBuffer(GL2DVertexBuffer& vertex_buffer, const Pt& pt1, const Pt& pt2)
+void Texture::OrthoBlit(Pt pt1, Pt pt2) const
+{ OrthoBlit(pt1, pt2, m_tex_coords); }
+
+void Texture::OrthoBlit(Pt pt) const
+{ OrthoBlit(pt, pt + Pt(m_default_width, m_default_height), m_tex_coords); }
+
+void Texture::InitBuffer(GL2DVertexBuffer& vertex_buffer, Pt pt1, Pt pt2)
 {
     vertex_buffer.store(pt2.x, pt1.y);
     vertex_buffer.store(pt1.x, pt1.y);
@@ -163,25 +125,15 @@ void Texture::InitBuffer(GL2DVertexBuffer& vertex_buffer, float x1, float y1, fl
     vertex_buffer.store(x2, y2);
 }
 
-void Texture::InitBuffer(GLTexCoordBuffer& tex_coord_buffer, const GLfloat* tex_coords)
+void Texture::InitBuffer(GLTexCoordBuffer& tex_coord_buffer, std::array<GLfloat, 4> tex_coords)
 {
-    if (tex_coords) {
-        tex_coord_buffer.store(tex_coords[2], tex_coords[1]);
-        tex_coord_buffer.store(tex_coords[0], tex_coords[1]);
-        tex_coord_buffer.store(tex_coords[0], tex_coords[3]);
-        tex_coord_buffer.store(tex_coords[2], tex_coords[3]);
-    } else {
-        tex_coord_buffer.store(1.0, 0.0);
-        tex_coord_buffer.store(0.0, 0.0);
-        tex_coord_buffer.store(0.0, 1.0);
-        tex_coord_buffer.store(1.0, 1.0);
-    }
+    tex_coord_buffer.store(tex_coords[2], tex_coords[1]);
+    tex_coord_buffer.store(tex_coords[0], tex_coords[1]);
+    tex_coord_buffer.store(tex_coords[0], tex_coords[3]);
+    tex_coord_buffer.store(tex_coords[2], tex_coords[3]);
 }
 
-void Texture::OrthoBlit(const Pt& pt) const
-{ OrthoBlit(pt, pt + Pt(m_default_width, m_default_height), m_tex_coords); }
-
-void Texture::Load(const boost::filesystem::path& path, bool mipmap/* = false*/)
+void Texture::Load(const boost::filesystem::path& path, bool mipmap)
 {
     namespace gil = boost::gil;
     namespace fs = boost::filesystem;
@@ -189,23 +141,27 @@ void Texture::Load(const boost::filesystem::path& path, bool mipmap/* = false*/)
     if (m_opengl_id)
         Clear();
 
+    // convert path into UTF-8 format filename string for potential error reporting
+    // but do the work only if actually throwing error to log
+    constexpr auto loggable_path = [](const fs::path& p) {
+#if defined (_WIN32)
+        boost::filesystem::path::string_type path_native = p.native();
+        std::string filename;
+        utf8::utf16to8(path_native.begin(), path_native.end(), std::back_inserter(filename));
+        return filename;
+#else
+        return p.generic_string();
+#endif
+    };
+
     if (!fs::exists(path)) {
         std::cerr << "Texture::Load passed non-existant path: " << path.generic_string() << std::endl;
-        throw BadFile("Texture file \"" + path.generic_string() + "\" does not exist");
+        throw BadFile("Texture file \"" + loggable_path(path) + "\" does not exist");
     }
     if (!fs::is_regular_file(path)) {
         std::cerr << "Texture::Load passed non-file path: " << path.generic_string() << std::endl;
-        throw BadFile("Texture \"file\" \"" + path.generic_string() + "\" is not a file");
+        throw BadFile("Texture \"file\" \"" + loggable_path(path) + "\" is not a file");
     }
-
-    // convert path into UTF-8 format filename string
-#if defined (_WIN32)
-    boost::filesystem::path::string_type path_native = path.native();
-    std::string filename;
-    utf8::utf16to8(path_native.begin(), path_native.end(), std::back_inserter(filename));
-#else
-    std::string filename = path.generic_string();
-#endif
 
     static_assert(sizeof(gil::gray8_pixel_t) == 1, "gray8 pixel type does not match expected type size");
     static_assert(sizeof(gil::gray_alpha8_pixel_t) == 2, "gray_alpha8 pixel type does not match expected type size");
@@ -230,42 +186,43 @@ void Texture::Load(const boost::filesystem::path& path, bool mipmap/* = false*/)
     > ImageTypes;
     typedef gil::any_image<ImageTypes> ImageType;
 #endif
-    if (!fs::exists(path))
-        throw BadFile("Texture file \"" + filename + "\" does not exist");
-    if (!fs::is_regular_file(path))
-        throw BadFile("Texture \"file\" \"" + filename + "\" is not a file");
 
     std::string extension = boost::algorithm::to_lower_copy(path.extension().string());
-
     ImageType image;
     try {
-        // First attempt -- try just to read the file in one of the default
-        // formats above.
+        // First attempt -- try just to read the file in one of the default formats above.
+        // using ifstream version instead of file name version of read_image goes around unicode paths translation issues
 #if GG_HAVE_LIBPNG
-        if (extension == ".png")
-            gil::read_image(filename, image, gil::image_read_settings<gil::png_tag>());
+        if (extension == ".png") {
+            boost::filesystem::ifstream in(path, std::ios::binary);
+            gil::read_image(in, image, gil::image_read_settings<gil::png_tag>());
+        }
         else
 #endif
 #if GG_HAVE_LIBTIFF
-        if (extension == ".tif" || extension == ".tiff")
-            gil::read_image(filename, image, gil::image_read_settings<gil::tiff_tag>());
+        if (extension == ".tif" || extension == ".tiff") {
+            boost::filesystem::ifstream in(path, std::ios::binary);
+            gil::read_image(in, image, gil::image_read_settings<gil::tiff_tag>());
+        }
         else
 #endif
-            throw BadFile("Texture file \"" + filename + "\" does not have a supported file extension");
+            throw BadFile("Texture file \"" + loggable_path(path) + "\" does not have a supported file extension");
     } catch (const std::ios_base::failure&) {
         // Second attempt -- If *_read_image() throws, see if we can convert
         // the image to RGBA.  This is needed for color-indexed images.
 #if GG_HAVE_LIBPNG
         if (extension == ".png") {
             gil::rgba8_image_t rgba_image;
-            gil::read_and_convert_image(filename, rgba_image, gil::image_read_settings<gil::png_tag>());
+            boost::filesystem::ifstream in(path, std::ios::binary);
+            gil::read_and_convert_image(in, rgba_image, gil::image_read_settings<gil::png_tag>());
             image = std::move(rgba_image);
         }
 #endif
 #if GG_HAVE_LIBTIFF
         if (extension == ".tif" || extension == ".tiff") {
             gil::rgba8_image_t rgba_image;
-            gil::read_and_convert_image(filename, rgba_image, gil::image_read_settings<gil::tiff_tag>());
+            boost::filesystem::ifstream in(path, std::ios::binary);
+            gil::read_and_convert_image(in, rgba_image, gil::image_read_settings<gil::tiff_tag>());
             image = std::move(rgba_image);
         }
 #endif
@@ -299,7 +256,7 @@ void Texture::Load(const boost::filesystem::path& path, bool mipmap/* = false*/)
     }
 #endif
 
-    const unsigned char* image_data = nullptr;
+    const uint8_t* image_data = nullptr;
 
     IF_IMAGE_TYPE_IS(gil::gray8)
     else IF_IMAGE_TYPE_IS(gil::gray_alpha8)
@@ -313,15 +270,15 @@ void Texture::Load(const boost::filesystem::path& path, bool mipmap/* = false*/)
     case 2:  m_format = GL_LUMINANCE_ALPHA; break;
     case 3:  m_format = GL_RGB; break;
     case 4:  m_format = GL_RGBA; break;
-    default: throw BadFile("Texture file \"" + filename + "\" does not have a supported number of color channels (1-4)");
+    default: throw BadFile("Texture file \"" + loggable_path(path) + "\" does not have a supported number of color channels (1-4)");
     }
 
     assert(image_data);
     Init(m_default_width, m_default_height, image_data, m_format, m_type, m_bytes_pp, mipmap);
 }
 
-void Texture::Init(X width, Y height, const unsigned char* image, GLenum format, GLenum type,
-                   unsigned int bytes_per_pixel, bool mipmap/* = false*/)
+void Texture::Init(X width, Y height, const uint8_t* image, GLenum format, GLenum type,
+                   unsigned int bytes_per_pixel, bool mipmap)
 {
     glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
     glPixelStorei(GL_UNPACK_SWAP_BYTES, false);
@@ -376,7 +333,7 @@ void Texture::Clear()
     m_tex_coords[2] = m_tex_coords[3] = 1.0f;   // max x, y
 }
 
-void Texture::InitFromRawData(X width, Y height, const unsigned char* image, GLenum format, GLenum type,
+void Texture::InitFromRawData(X width, Y height, const uint8_t* image, GLenum format, GLenum type,
                               unsigned int bytes_per_pixel, bool mipmap)
 {
     if (!image)
@@ -412,8 +369,8 @@ void Texture::InitFromRawData(X width, Y height, const unsigned char* image, GLe
     if (image_is_power_of_two) {
         glTexImage2D(GL_TEXTURE_2D, 0, format, Value(width), Value(height), 0, format, type, image);
     } else {
-        std::vector<unsigned char> zero_data(bytes_per_pixel * Value(GL_texture_width) * Value(GL_texture_height));
-        glTexImage2D(GL_TEXTURE_2D, 0, format, Value(GL_texture_width), Value(GL_texture_height), 0, format, type, &zero_data[0]);
+        std::vector<uint8_t> zero_data(bytes_per_pixel * Value(GL_texture_width) * Value(GL_texture_height));
+        glTexImage2D(GL_TEXTURE_2D, 0, format, Value(GL_texture_width), Value(GL_texture_height), 0, format, type, zero_data.data());
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, Value(width), Value(height), format, type, image);
     }
 
@@ -428,13 +385,12 @@ void Texture::InitFromRawData(X width, Y height, const unsigned char* image, GLe
         m_width = X(w);
         m_height = Y(h);
     }
-    m_tex_coords[2] = Value(1.0 * m_default_width / m_width);
-    m_tex_coords[3] = Value(1.0 * m_default_height / m_height);
+    m_tex_coords[2] = static_cast<GLfloat>(m_default_width) / Value(m_width);
+    m_tex_coords[3] = static_cast<GLfloat>(m_default_height) / Value(m_height);
 }
 
-unsigned char* Texture::GetRawBytes()
+std::vector<uint8_t> Texture::GetRawBytes()
 {
-    unsigned char* retval = nullptr;
     glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
     glPixelStorei(GL_PACK_SWAP_BYTES, false);
     glPixelStorei(GL_PACK_LSB_FIRST, false);
@@ -444,9 +400,9 @@ unsigned char* Texture::GetRawBytes()
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
 
     // get pixel data
-    typedef unsigned char uchar;
-    retval = new uchar[Value(m_width) * Value(m_height) * m_bytes_pp];
-    glGetTexImage(GL_TEXTURE_2D, 0, m_format, m_type, retval);
+    const auto num_bytes = Value(m_width) * Value(m_height) * m_bytes_pp;
+    std::vector<uint8_t> retval(num_bytes, 0u);
+    glGetTexImage(GL_TEXTURE_2D, 0, m_format, m_type, retval.data());
     glPopClientAttrib();
     return retval;
 }
@@ -460,13 +416,13 @@ SubTexture::SubTexture(std::shared_ptr<const Texture> texture, X x1, Y y1, X x2,
     m_width(x2 - x1),
     m_height(y2 - y1)
 {
-    if (!m_texture) throw BadTexture("Attempted to contruct subtexture from invalid texture");
-    if (x2 < x1 || y2 < y1) throw InvalidTextureCoordinates("Attempted to contruct subtexture from invalid coordinates");
+    if (!m_texture) throw BadTexture("Attempted to construct subtexture from invalid texture");
+    if (x2 < x1 || y2 < y1) throw InvalidTextureCoordinates("Attempted to construct subtexture from invalid coordinates");
 
-    m_tex_coords[0] = Value(x1 * 1.0 / m_texture->Width());
-    m_tex_coords[1] = Value(y1 * 1.0 / m_texture->Height());
-    m_tex_coords[2] = Value(x2 * 1.0 / m_texture->Width());
-    m_tex_coords[3] = Value(y2 * 1.0 / m_texture->Height());
+    m_tex_coords[0] = static_cast<GLfloat>(x1) / Value(m_texture->Width());
+    m_tex_coords[1] = static_cast<GLfloat>(y1) / Value(m_texture->Height());
+    m_tex_coords[2] = static_cast<GLfloat>(x2) / Value(m_texture->Width());
+    m_tex_coords[3] = static_cast<GLfloat>(y2) / Value(m_texture->Height());
 }
 
 SubTexture::SubTexture(std::shared_ptr<const Texture> texture) :
@@ -474,7 +430,7 @@ SubTexture::SubTexture(std::shared_ptr<const Texture> texture) :
     m_width(GG::X1),
     m_height(GG::Y1)
 {
-    if (!m_texture) throw BadTexture("Attempted to contruct subtexture from invalid texture");
+    if (!m_texture) throw BadTexture("Attempted to construct subtexture from invalid texture");
 
     m_width = m_texture->Width();
     m_height = m_texture->Height();
@@ -516,25 +472,10 @@ SubTexture& SubTexture::operator=(SubTexture&& rhs) noexcept
     return *this;
 }
 
-bool SubTexture::Empty() const
-{ return !m_texture; }
-
-const GLfloat* SubTexture::TexCoords() const
-{ return m_tex_coords; }
-
-X SubTexture::Width() const
-{ return m_width; }
-
-Y SubTexture::Height() const
-{ return m_height; }
-
-const Texture* SubTexture::GetTexture() const
-{ return m_texture.get(); }
-
-void SubTexture::OrthoBlit(const Pt& pt1, const Pt& pt2) const
+void SubTexture::OrthoBlit(Pt pt1, Pt pt2) const
 { if (m_texture) m_texture->OrthoBlit(pt1, pt2, m_tex_coords); }
 
-void SubTexture::OrthoBlit(const Pt& pt) const
+void SubTexture::OrthoBlit(Pt pt) const
 { if (m_texture) m_texture->OrthoBlit(pt, pt + Pt(m_width, m_height), m_tex_coords); }
 
 void SubTexture::Clear()
@@ -566,11 +507,11 @@ std::shared_ptr<Texture> TextureManager::StoreTexture(Texture* texture, std::str
 std::shared_ptr<Texture> TextureManager::StoreTexture(std::shared_ptr<Texture> texture, std::string texture_name)
 {
     std::scoped_lock lock(m_texture_access_guard);
-    m_textures[std::move(texture_name)] = std::move(texture);
+    m_textures[std::move(texture_name)] = texture;
     return texture;
 }
 
-std::shared_ptr<Texture> TextureManager::GetTexture(const boost::filesystem::path& path, bool mipmap/* = false*/)
+std::shared_ptr<Texture> TextureManager::GetTexture(const boost::filesystem::path& path, bool mipmap)
 {
     std::scoped_lock lock(m_texture_access_guard);
     auto it = m_textures.find(path.generic_string());

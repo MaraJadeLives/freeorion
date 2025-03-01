@@ -42,15 +42,17 @@ Policy
                     ]
                 ]
             ]
+            priority = [[TARGET_AFTER_SCALING_PRIORITY]]
             effects = SetTargetInfluence value = Value +
-                (NamedReal name = "PLC_VASSALIZATION_INFLUENCE_SCALING" value = 3.0) *
+                (NamedReal name = "PLC_VASSALIZATION_INFLUENCE_SCALING" value = 1.5) *
                 (Statistic Sum value = LocalCandidate.Population condition = And [
                     InSystem id = Target.SystemID
                     Planet
                     Unowned
                     Species
                     Not Species name = Source.Species
-                    Not Species name = Target.Species                    
+                    Not Species name = Target.Species
+                    Not Species name = "SP_ANCIENT_GUARDIANS"
                 ] ^ 0.5) / max(1.0,
                 (Statistic Count condition = And [ // spreads bonus over eligible recipient planets in system
                     Planet
@@ -63,4 +65,4 @@ Policy
     graphic = "icons/policies/economic_vassalization.png"
 
 #include "/scripting/policies/policies.macros"
-#include "/scripting/common/priorities.macros"
+#include "/scripting/macros/priorities.macros"

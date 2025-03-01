@@ -1,7 +1,24 @@
-from common.base_prod import TECH_COST_MULTIPLIER, TROOPS_PER_POP
-from common.priorities import (
+from focs._effects import (
+    CurrentTurn,
+    EffectsGroup,
+    LocalCandidate,
+    MinOf,
+    NamedReal,
+    OwnedBy,
+    Planet,
+    Population,
+    SetMaxTroops,
+    SetTroops,
+    Source,
+    Target,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER, TROOPS_PER_POP
+from macros.priorities import (
     AFTER_ALL_TARGET_MAX_METERS_PRIORITY,
     TARGET_AFTER_SCALING_PRIORITY,
+    TARGET_EARLY_BEFORE_SCALING_PRIORITY,
 )
 
 Tech(
@@ -9,10 +26,10 @@ Tech(
     description="DEF_GARRISON_1_DESC",
     short_description="TROOPS_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=5 * TECH_COST_MULTIPLIER,
+    researchcost=9 * TECH_COST_MULTIPLIER,
     researchturns=3,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_ROOT_DEFENSE",
+    prerequisites=["DEF_ROOT_DEFENSE"],
     effectsgroups=[
         EffectsGroup(
             scope=Planet() & OwnedBy(empire=Source.Owner),
@@ -30,11 +47,14 @@ Tech(
     description="DEF_GARRISON_2_DESC",
     short_description="TROOPS_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=15 * TECH_COST_MULTIPLIER,
+    researchcost=25 * TECH_COST_MULTIPLIER,
     researchturns=5,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_GARRISON_1",
-    unlock=Item(type=Policy, name="PLC_CHECKPOINTS"),
+    prerequisites=["DEF_GARRISON_1"],
+    unlock=[
+        Item(type=UnlockPolicy, name="PLC_CHECKPOINTS"),
+        Item(type=UnlockPolicy, name="PLC_INSURGENCY"),
+    ],
     effectsgroups=[
         EffectsGroup(
             scope=Planet()
@@ -53,6 +73,7 @@ Tech(
             scope=Planet() & OwnedBy(empire=Source.Owner) & Population(low=0.01),
             stackinggroup="GARRISON_2_TROOPS_STACK",
             accountinglabel="DEF_TECH_ACCOUNTING_LABEL",
+            priority=TARGET_EARLY_BEFORE_SCALING_PRIORITY,
             effects=SetMaxTroops(
                 value=Value
                 + Target.Population * NamedReal(name="GARRISON_2_MAXTROOPS_PERPOP", value=2 * TROOPS_PER_POP)
@@ -67,10 +88,10 @@ Tech(
     description="DEF_GARRISON_3_DESC",
     short_description="TROOPS_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=50 * TECH_COST_MULTIPLIER,
+    researchcost=84 * TECH_COST_MULTIPLIER,
     researchturns=7,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_GARRISON_2",
+    prerequisites=["DEF_GARRISON_2"],
     effectsgroups=[
         EffectsGroup(
             scope=Planet()
@@ -101,11 +122,11 @@ Tech(
     description="DEF_GARRISON_4_DESC",
     short_description="TROOPS_SHORT_DESC",
     category="DEFENSE_CATEGORY",
-    researchcost=150 * TECH_COST_MULTIPLIER,
+    researchcost=216 * TECH_COST_MULTIPLIER,
     researchturns=9,
     tags=["PEDIA_DEFENSE_CATEGORY"],
-    prerequisites="DEF_GARRISON_3",
-    unlock=Item(type=Policy, name="PLC_MARTIAL_LAW"),
+    prerequisites=["DEF_GARRISON_3"],
+    unlock=Item(type=UnlockPolicy, name="PLC_MARTIAL_LAW"),
     effectsgroups=[
         EffectsGroup(
             scope=Planet()
@@ -124,6 +145,7 @@ Tech(
             scope=Planet() & OwnedBy(empire=Source.Owner) & Population(low=0.01),
             stackinggroup="GARRISON_4_TROOPS_STACK",
             accountinglabel="DEF_TECH_ACCOUNTING_LABEL",
+            priority=TARGET_EARLY_BEFORE_SCALING_PRIORITY,
             effects=SetMaxTroops(
                 value=Value
                 + Target.Population * NamedReal(name="GARRISON_4_MAX_TROOPS_PERPOP", value=3 * TROOPS_PER_POP)

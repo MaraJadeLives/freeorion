@@ -55,52 +55,22 @@ Add `default\python\` as content root.
 pip install -r default\python\requirements-dev.txt
 ```
 
-### Automate check with pre commit hooks
-Git could run a script
-([hook](https://git-scm.com/book/en/v2/Customizing-Git-Git-Hooks)) 
-when you commit changes.  
-
-This feature could be used as duplication of the CI actions.
-The main difference are that hooks are optional 
-(a developer made a decision if they should be run) 
-and that hooks gives you feedback much faster 
-because they are run on developer machine.
-
-Hooks work on all operating systems.
-You need to install them once.
-Hook will track config file and update itself in case of changes. 
-
-- install git
-- install Python
-- [Install pre-commit](https://pre-commit.com/#install) 
-    ```sh
-    pip install pre-commit
-    ```
-- install hooks from the project root
-    ```sh
-    pre-commit install 
-    ```
-
-Notes:
-- First commit after installation/update of hooks may take some time.
-- You can skip checks by adding `-n, --no-verify` to `git commit`.
 
 ## Developers routine
+
+### It's recommended to install pre-commit hooks, see: [CONTRIBUTING.md](CONTRIBUTING.md)
+
+
 ### Manual code style check
 You don't need to run this script manually, pre-commit hooks and CI will do it fo you.
 
-We use [flake8](https://pypi.python.org/pypi/flake8) for code style checks.
-Settings for flake8 located in the `tox.ini` across the project.
+We use [ruff](https://github.com/charliermarsh/ruff) for code style checks.
+Settings for ruff are located in the `pyproject.toml`.
 
-Flake should be run from directory where `tox.ini` located:
+You could run ruff in any directory, and it will check the files in that directory only.
+It's recommended to run in from the root.
 ```sh
-cd default/python
-flake8
-```
-We use [isort](https://github.com/PyCQA/isort) to keep imports in the order.
-We use the default setting.
-```shell
-isort .
+ruff .
 ```
 
 We use [black](https://pypi.org/project/black/) for code formatting.
@@ -144,7 +114,7 @@ you could even reload some python files with `reload()`
 Result is printed both to the chat and logs.
 
 - Go to "logs and config" directory
-- Open AI/config.in
+- Open AI/default/config.ini
 - Add `allow_debug_chat=1` to main section
   ```ini
   [main]

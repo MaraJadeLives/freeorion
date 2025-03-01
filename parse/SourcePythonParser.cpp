@@ -5,47 +5,29 @@
 #include "../universe/Conditions.h"
 #include "../universe/ValueRefs.h"
 
-value_ref_wrapper<int> variable_wrapper::get_int_property(const char *property) const {
-    return value_ref_wrapper<int>(std::make_shared<ValueRef::Variable<int>>(m_reference_type, property));
+value_ref_wrapper<int> variable_wrapper::get_int_property(std::string property) const {
+    return value_ref_wrapper<int>(std::make_shared<ValueRef::Variable<int>>(
+        m_reference_type, std::move(property), m_container, ValueRef::ValueToReturn::Initial));
 }
 
-value_ref_wrapper<double> variable_wrapper::get_double_property(const char *property) const {
-    return value_ref_wrapper<double>(std::make_shared<ValueRef::Variable<double>>(m_reference_type, property));
+value_ref_wrapper<double> variable_wrapper::get_double_property(std::string property) const {
+    return value_ref_wrapper<double>(std::make_shared<ValueRef::Variable<double>>(
+        m_reference_type, std::move(property), m_container));
 }
 
-variable_wrapper::operator condition_wrapper() const {
-    switch (m_reference_type) {
-        case ValueRef::ReferenceType::SOURCE_REFERENCE:
-            return condition_wrapper(std::make_shared<Condition::Source>());
-        case ValueRef::ReferenceType::EFFECT_TARGET_REFERENCE:
-            return condition_wrapper(std::make_shared<Condition::Target>());
-        case ValueRef::ReferenceType::CONDITION_ROOT_CANDIDATE_REFERENCE:
-            return condition_wrapper(std::make_shared<Condition::RootCandidate>());
-        default:
-            throw std::runtime_error(std::string("Not implemented in ") + __func__ + " type " + std::to_string(static_cast<signed int>(m_reference_type)));
-    }
+value_ref_wrapper<std::string> variable_wrapper::get_string_property(std::string property) const {
+    return value_ref_wrapper<std::string>(std::make_shared<ValueRef::Variable<std::string>>(
+        m_reference_type, std::move(property), m_container));
 }
 
-condition_wrapper operator&(const variable_wrapper& lhs, const condition_wrapper& rhs) {
-    std::unique_ptr<Condition::Condition> variable;
-    switch (lhs.m_reference_type) {
-        case ValueRef::ReferenceType::SOURCE_REFERENCE:
-            variable = std::make_unique<Condition::Source>();
-            break;
-        case ValueRef::ReferenceType::EFFECT_TARGET_REFERENCE:
-            variable = std::make_unique<Condition::Target>();
-            break;
-        case ValueRef::ReferenceType::CONDITION_ROOT_CANDIDATE_REFERENCE:
-            variable = std::make_unique<Condition::RootCandidate>();
-            break;
-        default:
-            throw std::runtime_error(std::string("Not implemented in ") + __func__ + " type " + std::to_string(static_cast<int>(lhs.m_reference_type)) + rhs.condition->Dump());
-    }
+variable_wrapper variable_wrapper::get_variable_property(std::string_view container) const
+{ return variable_wrapper(m_reference_type, ToContainer(container)); }
 
-    return condition_wrapper(std::make_shared<Condition::And>(
-        std::move(variable),
-        rhs.condition->Clone()
-    ));
+ValueRef::ContainerType variable_wrapper::ToContainer(std::string_view s) noexcept {
+    return (s == "Planet") ? ValueRef::ContainerType::PLANET :
+           (s == "System") ? ValueRef::ContainerType::SYSTEM :
+           (s == "Fleet") ? ValueRef::ContainerType::FLEET :
+           ValueRef::ContainerType::NONE;
 }
 
 void RegisterGlobalsSources(boost::python::dict& globals) {

@@ -1,10 +1,7 @@
 BuildingType
     name = "BLD_TRANSLATOR"
     description = "BLD_TRANSLATOR_DESC"
-    buildcost = 500 * 2^0.5 * [[BUILDING_COST_MULTIPLIER]] * (1.0 + Statistic CountUnique
-            value = LocalCandidate.Species
-            condition = And [ Planet Species VisibleToEmpire empire = Source.Owner ]
-        )^(-0.5)
+    buildcost = 320 * [[BUILDING_COST_MULTIPLIER]]
     buildtime = 10
     location = And [
         Planet
@@ -42,7 +39,7 @@ BuildingType
     ]
     icon = "icons/building/translator.png"
 
-#include "/scripting/common/enqueue.macros"
-#include "/scripting/common/priorities.macros"
-#include "/scripting/common/base_prod.macros"
+#include "/scripting/macros/enqueue.macros"
+#include "/scripting/macros/priorities.macros"
+#include "/scripting/macros/base_prod.macros"
 #include "/scripting/buildings/buildings.macros"

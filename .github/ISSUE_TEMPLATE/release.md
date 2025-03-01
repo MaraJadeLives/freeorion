@@ -48,10 +48,11 @@ doing the actual release.
 
 #### Preparations
 
-* [ ] Create a new GitHub Issue from `.github/RELEASE_TEMPLATE.md` and follow
+* [ ] Create a new GitHub Issue using `Publish release` template and follow
       instructions. :wink:
 * [ ] Determine initial milestones and dates for release.
-* [ ] Update `packaging/org.freeorion.FreeOrion.metainfo.xml` and linked screenshots if necessary
+* [ ] Add the new release in `packaging/org.freeorion.FreeOrion.metainfo.xml`
+* [ ] Update the screenshots in `packaging/org.freeorion.FreeOrion.metainfo.xml` if necessary
 * [ ] Create release branch from development branch master by using:
 ```
 git checkout -b release-vX.Y.Z master
@@ -71,6 +72,8 @@ git checkout -b release-vX.Y.Z master
 
 * [ ] Integrate incoming bugfixes.
 * [ ] Update `ChangeLog.md` again if needed.
+* [ ] Update the release date in `packaging/org.freeorion.FreeOrion.metainfo.xml` if necessary
+* [ ] Update the screenshots in `packaging/org.freeorion.FreeOrion.metainfo.xml` if necessary
 * [ ] *On release branch HEAD* - Tag the release candidate by using:
 ```
 git tag --annotate --message="X.Y.Z Release Candidate #"  vX.Y.Z-rc#
@@ -105,14 +108,14 @@ git tag --annotate --message="X.Y.Z Stable Release"  vX.Y.Z
 
 #### Cleanup
 
-* [ ] Cherry-pick updates of `ChangeLog.md` to master. 
+* [ ] Cherry-pick updates of `ChangeLog.md` to master.
 * [ ] Prune release candidate tags.
 * [ ] Prune release branch.
 
 
-### Blocking issues
+### Blocking Issues and PRs
 
 <!--
 Provide link to filtered list of issues which are blocking the release
 -->
-[Issues blocking vX.Y.Z](https://github.com/freeorion/freeorion/issues?q=is%3Aopen+is%3Aissue+milestone%3A%22vX.Y.Z%22)
+[Issues blocking vX.Y.Z](https://github.com/freeorion/freeorion/milestone/<release_milestone#>)

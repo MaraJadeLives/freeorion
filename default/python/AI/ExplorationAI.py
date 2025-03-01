@@ -38,7 +38,7 @@ def get_current_exploration_info():
     return list(already_covered), available_scouts
 
 
-def assign_scouts_to_explore_systems():
+def assign_scouts_to_explore_systems():  # noqa: C901
     # TODO: use Graph Theory to explore closest systems
     universe = fo.getUniverse()
     capital_sys_id = PlanetUtilsAI.get_capital_sys_id()
@@ -139,7 +139,7 @@ def assign_scouts_to_explore_systems():
     debug("Unassigned exploration targets: %s" % needs_coverage)
 
 
-def follow_vis_system_connections(start_system_id, home_system_id):
+def follow_vis_system_connections(start_system_id, home_system_id):  # noqa: C901
     universe = fo.getUniverse()
     empire_id = fo.empireID()
     exploration_list = [start_system_id]
@@ -161,8 +161,8 @@ def follow_vis_system_connections(start_system_id, home_system_id):
             visibility_turn_list = sorted(
                 universe.getVisibilityTurnsMap(cur_system_id, empire_id).items(), key=lambda x: x[0].numerator
             )
-            visibility_info = ", ".join("%s: %s" % (vis.name, turn) for vis, turn in visibility_turn_list)
-            debug("%s previously %s. Visibility per turn: %s " % (system_header, pre_vis, visibility_info))
+            visibility_info = ", ".join(f"{vis.name}: {turn}" for vis, turn in visibility_turn_list)
+            debug(f"{system_header} previously {pre_vis}. Visibility per turn: {visibility_info} ")
             status_info = []
         else:
             status_info = [system_header]
@@ -196,7 +196,7 @@ def update_explored_systems():
     obs_lanes = empire.obstructedStarlanes()
     obs_lanes_list = [el for el in obs_lanes]  # should result in list of tuples (sys_id1, sys_id2)
     if obs_lanes_list:
-        debug("Obstructed starlanes are: %s" % ", ".join("%s-%s" % item for item in obs_lanes_list))
+        debug("Obstructed starlanes are: %s" % ", ".join("{}-{}".format(*item) for item in obs_lanes_list))
     else:
         debug("No obstructed Starlanes")
     newly_explored = []

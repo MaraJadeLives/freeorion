@@ -1,3 +1,24 @@
+<p align="center">
+ <img alt="" src="./default/data/art/logo.png" width=500 align="center">
+</p>
+
+<p align="center">
+    <a href="https://github.com/freeorion/freeorion/releases">
+        <img src="https://img.shields.io/github/v/tag/freeorion/freeorion"
+            alt="Tag"></a>
+    <a href="https://sourceforge.net/projects/freeorion/">
+        <img src="https://img.shields.io/sourceforge/platform/freeorion"
+            alt="Tag"></a>
+    <a href="https://github.com/freeorion/freeorion/graphs/contributors" >
+        <img src="https://img.shields.io/github/contributors/freeorion/freeorion" alt="Contributors" /></a>
+    <a href="https://github.com/freeorion/freeorion/graphs/commit-activity">
+        <img src="https://img.shields.io/github/commit-activity/m/freeorion/freeorion"  alt="Activity" /></a>
+</p>
+<p align="center">
+    <a href="https://twitter.com/intent/follow?screen_name=Freeorion">
+        <img src="https://img.shields.io/twitter/follow/Freeorion?style=social&logo=twitter" alt="follow on Twitter"></a>
+</p>
+
 FreeOrion
 =========
 
@@ -17,11 +38,11 @@ Requirements
 ------------
 
 FreeOrion requires an *OpenGL 2.1* capable graphic card and a display with a
-minimum resolution of at least *800x600*.
+suggested minimum resolution of at least *1280x800*.
 
 Recent releases of FreeOrion require at least *Windows 8.1* or later,
 *macOS 10.12* or later or any reasonably recent Linux distribution on x86
-compatible processors, such as *Ubuntu 18.04 or 20.04*.  Other operating
+compatible processors, such as *Ubuntu 20.04 or 22.10*.  Other operating
 systems and architectures have reported to be working by users, but are not
 actively supported by the FreeOrion project.
 
@@ -148,6 +169,6 @@ accompanying license file.
 [Gentoo package]: https://packages.gentoo.org/packages/games-strategy/freeorion
 [openSUSE Package]: https://build.opensuse.org/package/show/games/freeorion
 [Void package]: https://github.com/voidlinux/void-packages/tree/master/srcpkgs/freeorion
-[ArchLinux Package]: https://archlinux.org/packages/community/x86_64/freeorion/
+[ArchLinux Package]: https://archlinux.org/packages/extra/x86_64/freeorion/
 [GPL v2]: https://www.gnu.org/licenses/gpl-2.0.txt
 [CC-BY-SA-3.0]: https://creativecommons.org/licenses/by-sa/3.0/legalcode

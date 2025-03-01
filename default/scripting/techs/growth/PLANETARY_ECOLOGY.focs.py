@@ -1,12 +1,24 @@
-from common.base_prod import TECH_COST_MULTIPLIER
-from common.priorities import TARGET_POPULATION_AFTER_SCALING_PRIORITY
+from focs._effects import (
+    Adequate,
+    EffectsGroup,
+    Good,
+    OwnedBy,
+    OwnerHasTech,
+    Planet,
+    SetTargetPopulation,
+    Source,
+    Value,
+)
+from focs._tech import *
+from macros.base_prod import TECH_COST_MULTIPLIER
+from macros.priorities import TARGET_POPULATION_AFTER_SCALING_PRIORITY
 
 Tech(
     name="GRO_PLANET_ECOL",
     description="GRO_PLANET_ECOL_DESC",
     short_description="POPULATION_SHORT_DESC",
     category="GROWTH_CATEGORY",
-    researchcost=4 * TECH_COST_MULTIPLIER,
+    researchcost=8 * TECH_COST_MULTIPLIER,
     researchturns=2,
     tags=["PEDIA_GROWTH_CATEGORY"],
     effectsgroups=[

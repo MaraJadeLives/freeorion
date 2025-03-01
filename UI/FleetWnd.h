@@ -40,7 +40,7 @@ public:
     void            CullEmptyWnds();
     void            SetActiveFleetWnd(std::shared_ptr<FleetWnd> fleet_wnd);
     bool            CloseAll();
-    void            RefreshAll();
+    void            RefreshAll(int this_client_empire_id, const ScriptingContext& context);
 
     /** Enables, or disables if \a enable is false, issuing orders via FleetWnds. */
     void            EnableOrderIssuing(bool enable = true);
@@ -82,7 +82,7 @@ private:
 /** This is the top level Fleet UI element.  It shows a list of fleets, a
     new-fleet drop target, and a detail view of the currently selected fleet
     (a FleetDetailPanel). */
-class FleetWnd : public MapWndPopup {
+class FleetWnd final : public MapWndPopup {
 public:
     FleetWnd(const std::vector<int>& fleet_ids, bool order_issuing_enabled,
              double allowed_bounding_box_leeway = 0,
@@ -98,7 +98,7 @@ public:
     bool                    ContainsFleet(int fleet_id) const;  ///< returns true if fleet with ID \a fleet_id is shown in this FleetWnd
     /** Return true if this FleetWnd contains all \p fleet_ids. */
     template <typename Set>
-    bool                    ContainsFleets(const Set& fleet_ids) const;
+    bool                    ContainsFleets(Set fleet_ids) const;
     const std::set<int>&    FleetIDs() const;                   ///< returns IDs of all fleets shown in this FleetWnd
     std::set<int>           SelectedFleetIDs() const;           ///< returns IDs of selected fleets in this FleetWnd
     std::set<int>           SelectedShipIDs() const;            ///< returns IDs of selected ships in this FleetWnd
@@ -108,7 +108,7 @@ public:
 
     void PreRender() override;
 
-    void SizeMove(const GG::Pt& ul, const GG::Pt& lr) override;
+    void SizeMove(GG::Pt ul, GG::Pt lr) override;
 
     /** Deselect all fleets. */
     void DeselectAllFleets();
@@ -127,24 +127,24 @@ public:
 
 protected:
     void CloseClicked() override;
-    void LClick(const GG::Pt& pt, GG::Flags<GG::ModKey> mod_keys) override;
+    void LClick(GG::Pt pt, GG::Flags<GG::ModKey> mod_keys) override;
     void DoLayout();
 
 private:
     void RequireRefresh();
-    void Refresh();                          ///< regenerates contents
+    void Refresh(int this_client_empire_id, const ScriptingContext& context); ///< regenerates contents
     void RefreshStateChangedSignals();
 
     void AddFleet(int fleet_id);     ///< adds a new fleet row to this FleetWnd's ListBox of FleetRows and updates internal fleets bookkeeping
 
     void FleetSelectionChanged(const GG::ListBox::SelectionSet& rows);
-    void FleetRightClicked(GG::ListBox::iterator it, const GG::Pt& pt, const GG::Flags<GG::ModKey>& modkeys);
-    void FleetLeftClicked(GG::ListBox::iterator it, const GG::Pt& pt, const GG::Flags<GG::ModKey>& modkeys);
-    void FleetDoubleClicked(GG::ListBox::iterator it, const GG::Pt& pt, const GG::Flags<GG::ModKey>& modkeys);
+    void FleetRightClicked(GG::ListBox::iterator it, GG::Pt pt, GG::Flags<GG::ModKey> modkeys);
+    void FleetLeftClicked(GG::ListBox::iterator it, GG::Pt pt, GG::Flags<GG::ModKey> modkeys);
+    void FleetDoubleClicked(GG::ListBox::iterator it, GG::Pt pt, GG::Flags<GG::ModKey> modkeys);
 
     int         FleetInRow(GG::ListBox::iterator it) const;
     std::string TitleText() const;
-    void        CreateNewFleetFromDrops(const std::vector<int>& ship_ids);
+    void        CreateNewFleetFromDrops(const std::vector<int>& ship_ids, ScriptingContext& context, int empire_id);
 
     void ShipSelectionChanged(const GG::ListBox::SelectionSet& rows);
     void UniverseObjectDeleted(const std::shared_ptr<const UniverseObject>& obj);

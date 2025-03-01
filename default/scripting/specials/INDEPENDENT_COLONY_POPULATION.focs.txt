@@ -18,11 +18,11 @@ Special
                 Unowned
                 Species
             ]
-            priority = [[TARGET_OVERRIDE_PRIORITY]]
+            priority = [[TARGET_POPULATION_OVERRIDE_PRIORITY]]
             effects = [
                 SetTargetPopulation value = max(Value, SpecialCapacity name = ThisSpecial object = Source.ID)
             ]
     ]
     graphic = "icons/meter/pop.png"
 
-#include "/scripting/common/priorities.macros"
+#include "/scripting/macros/priorities.macros"

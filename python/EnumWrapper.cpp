@@ -1,4 +1,5 @@
 #include "../universe/BuildingType.h"
+#include "../universe/Condition.h"
 #include "../universe/Effect.h"
 #include "../universe/Enums.h"
 #include "../universe/Fleet.h"
@@ -7,6 +8,7 @@
 #include "../universe/ShipPart.h"
 #include "../universe/Species.h"
 #include "../universe/System.h"
+#include "../universe/ValueRef.h"
 #include "../universe/UniverseObject.h"
 #include "../universe/UnlockableItem.h"
 #include "../Empire/Diplomacy.h"
@@ -78,7 +80,7 @@ namespace FreeOrionPython {
         ;
         TraceLogger() << "WrapGameStateEnums: Wrap BuildType enum";
         auto buildType = py::enum_<BuildType>("buildType");
-        for (const auto& [bt, sv] : IterateEnum(EnumIterator<BuildType>{})) {
+        for (const auto& [bt, sv] : BuildTypeValues()) {
             TraceLogger() << "WrapGameStateEnums: Wrap BuildType enum " << sv;
             buildType.value(sv.data(), bt);
         }

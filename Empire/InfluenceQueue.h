@@ -16,11 +16,19 @@
 class ResourcePool;
 
 
+#if !defined(CONSTEXPR_STRING)
+#  if defined(__cpp_lib_constexpr_string) && ((!defined(__GNUC__) || (__GNUC__ > 11))) && ((!defined(_MSC_VER) || (_MSC_VER >= 1934)))
+#    define CONSTEXPR_STRING constexpr
+#  else
+#    define CONSTEXPR_STRING
+#  endif
+#endif
+
 struct FO_COMMON_API InfluenceQueue {
     /** The type of a single element in the Influence queue. */
     struct FO_COMMON_API Element {
-        Element() = default;
-        Element(int empire_id_, std::string name_, bool paused_ = false) :
+        CONSTEXPR_STRING Element() = default;
+        CONSTEXPR_STRING Element(int empire_id_, std::string name_, bool paused_ = false) :
             name(std::move(name_)),
             empire_id(empire_id_),
             paused(paused_)
@@ -35,40 +43,39 @@ struct FO_COMMON_API InfluenceQueue {
 
     private:
         friend class boost::serialization::access;
-        template <class Archive>
+        template <typename Archive>
         void serialize(Archive& ar, const unsigned int version);
     };
 
-    typedef std::deque<Element> QueueType;
+    using QueueType = std::deque<Element>;
+    using iterator = QueueType::iterator ;
+    using const_iterator = QueueType::const_iterator;
 
-    /** The InfluenceQueue iterator type.  Dereference yields a Element. */
-    typedef QueueType::iterator iterator;
-    /** The const InfluenceQueue iterator type.  Dereference yields a Element. */
-    typedef QueueType::const_iterator const_iterator;
-
+    InfluenceQueue() = default;
     explicit InfluenceQueue(int empire_id) :
         m_empire_id(empire_id)
     {}
 
     [[nodiscard]] bool  InQueue(const std::string& name) const;
 
-    [[nodiscard]] int   ProjectsInProgress() const { return m_projects_in_progress; }
-    [[nodiscard]] float TotalIPsSpent() const { return m_total_IPs_spent; };
-    [[nodiscard]] int   EmpireID() const { return m_empire_id; }
+    [[nodiscard]] int   ProjectsInProgress() const noexcept { return m_projects_in_progress; }
+    [[nodiscard]] float TotalIPsSpent() const noexcept { return m_total_IPs_spent; };
+    [[nodiscard]] int   EmpireID() const noexcept { return m_empire_id; }
 
     /** Returns amount of stockpile IP allocated to Influence queue elements. */
-    [[nodiscard]] float AllocatedStockpileIP() const;
+    [[nodiscard]] float AllocatedStockpileIP() const noexcept;
 
     /** Returns the value expected for the Influence Stockpile for the next
       * turn, based on the current InfluenceQueue allocations. */
-    [[nodiscard]] float ExpectedNewStockpileAmount() const { return m_expected_new_stockpile_amount; }
+    [[nodiscard]] float ExpectedNewStockpileAmount() const noexcept { return m_expected_new_stockpile_amount; }
 
 
     // STL container-like interface
-    [[nodiscard]] bool           empty() const { return m_queue.empty(); }
-    [[nodiscard]] unsigned int   size() const { return m_queue.size(); }
-    [[nodiscard]] const_iterator begin() const { return m_queue.begin(); }
-    [[nodiscard]] const_iterator end() const { return m_queue.end(); }
+    [[nodiscard]] auto empty() const noexcept { return m_queue.empty(); }
+    [[nodiscard]] auto size() const noexcept { return m_queue.size(); }
+    [[nodiscard]] auto begin() const noexcept { return m_queue.begin(); }
+    [[nodiscard]] auto end() const noexcept { return m_queue.end(); }
+
     [[nodiscard]] const_iterator find(const std::string& item_name) const;
     [[nodiscard]] const Element& operator[](std::size_t i) const;
     [[nodiscard]] const Element& operator[](int i) const;
@@ -79,7 +86,9 @@ struct FO_COMMON_API InfluenceQueue {
       * in each resource-sharing group of systems.  Does not actually "spend" the PP; a later call to
       * empire->CheckInfluenceProgress() will actually spend PP, remove items from queue and create them
       * in the universe. */
-    void Update(const ScriptingContext& context);
+    void Update(const ScriptingContext& context,
+                const std::vector<std::pair<int, double>>& annex_costs,
+                const std::vector<std::pair<std::string_view, double>>& policy_costs);
 
 
     // STL container-like interface
@@ -87,8 +96,8 @@ struct FO_COMMON_API InfluenceQueue {
     void                    insert(iterator it, const Element& element) { m_queue.insert(it, element); }
     void                    erase(int i);
     iterator                erase(iterator it) { return m_queue.erase(it); }
-    [[nodiscard]] iterator  begin() { return m_queue.begin(); }
-    [[nodiscard]] iterator  end() { return m_queue.end(); }
+    [[nodiscard]] iterator  begin() noexcept { return m_queue.begin(); }
+    [[nodiscard]] iterator  end() noexcept { return m_queue.end(); }
     [[nodiscard]] iterator  find(const std::string& item_name);
     [[nodiscard]] Element&  operator[](int i);
 
@@ -104,7 +113,7 @@ private:
     int         m_empire_id = ALL_EMPIRES;
 
     friend class boost::serialization::access;
-    template <class Archive>
+    template <typename Archive>
     void serialize(Archive& ar, const unsigned int version);
 };
 

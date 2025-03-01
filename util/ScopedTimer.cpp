@@ -3,6 +3,7 @@
 #include "Logger.h"
 
 #include <boost/chrono.hpp>
+#include <boost/unordered_map.hpp>
 
 #include <iomanip>
 #include <sstream>
@@ -13,68 +14,92 @@ namespace {
 
 class ScopedTimer::Impl {
 public:
-    Impl(std::string timed_name, bool enable_output, std::chrono::microseconds threshold) :
+    std::chrono::high_resolution_clock::time_point m_start;
+    std::string                                    m_name;
+    std::function<std::string ()>                  m_output_text_fn;
+    bool                                           m_enable_output;
+    std::chrono::microseconds                      m_threshold;
+
+    static constexpr bool start_now_noexcept = noexcept(decltype(m_start){std::chrono::high_resolution_clock::now()});
+    static constexpr bool elapsed_noexcept = noexcept(std::chrono::high_resolution_clock::now() - m_start);
+    static constexpr bool elapsed_count_noexcept = elapsed_noexcept &&
+        noexcept(std::declval<std::chrono::nanoseconds>().count());
+
+    Impl(std::string timed_name, bool enable_output, std::chrono::microseconds threshold)
+        noexcept(start_now_noexcept) :
         m_start(std::chrono::high_resolution_clock::now()),
         m_name(std::move(timed_name)),
         m_enable_output(enable_output),
         m_threshold(threshold)
-    {}
+    {
+        static_assert(noexcept(decltype(m_name){std::move(timed_name)}));
+        static_assert(noexcept(decltype(m_threshold){threshold}));
+    }
 
     Impl(std::function<std::string ()> output_text_fn, bool enable_output,
-         std::chrono::microseconds threshold) :
+         std::chrono::microseconds threshold) noexcept(start_now_noexcept) :
         m_start(std::chrono::high_resolution_clock::now()),
-        m_output_text_fn(output_text_fn),
+        m_output_text_fn(std::move(output_text_fn)),
         m_enable_output(enable_output),
         m_threshold(threshold)
-    {}
+    {
+        static_assert(noexcept(decltype(m_output_text_fn){std::move(output_text_fn)}));
+    }
 
-    ~Impl() {
+    ~Impl() noexcept {
         if (!m_enable_output)
             return;
 
-        std::chrono::nanoseconds duration{std::chrono::high_resolution_clock::now() - m_start};
+        try {
+            const auto elapsed = Elapsed();
 
-        if (duration < m_threshold)
-            return;
+            if (elapsed < m_threshold)
+                return;
 
-        std::stringstream ss;
-        if (!m_name.empty())
-            ss << m_name << " time: ";
-        else if (m_output_text_fn)
-            ss << m_output_text_fn() << " time: ";
-        else
-            ss << "time: ";
-        FormatDuration(ss, duration);
-        DebugLogger(timer) << ss.str();
+            std::stringstream ss;
+            if (!m_name.empty())
+                ss << m_name << " time: ";
+            else if (m_output_text_fn)
+                ss << m_output_text_fn() << " time: ";
+            else
+                ss << "time: ";
+            FormatDuration(ss, elapsed);
+            DebugLogger(timer) << ss.str();
+        } catch (...) {}
     }
 
-    void Restart()
+    void Restart() noexcept(noexcept(decltype(m_start){} = std::chrono::high_resolution_clock::now()))
     { m_start = std::chrono::high_resolution_clock::now(); }
 
+    std::chrono::nanoseconds Elapsed() const noexcept(elapsed_noexcept)
+    { return std::chrono::high_resolution_clock::now() - m_start; }
+
     template <typename UNITS = std::chrono::seconds>
-    double Duration() const {
-        using ns = std::chrono::nanoseconds;
-        ns duration{std::chrono::high_resolution_clock::now() - m_start};
-        return static_cast<double>(duration.count()) / ns::period::den * ns::period::num / UNITS::period::num * UNITS::period::den;
+    double Duration() const noexcept(elapsed_count_noexcept) {
+        using nsp = std::chrono::nanoseconds::period;
+        using up = typename UNITS::period;
+        constexpr auto scale = nsp::den / nsp::num * up::num / up::den;
+        const auto elapsed = Elapsed().count();
+        static_assert(noexcept(elapsed / scale));
+        return static_cast<double>(elapsed / scale);
     }
 
     std::string DurationString() const {
         std::stringstream ss;
-        std::chrono::nanoseconds duration{std::chrono::high_resolution_clock::now() - m_start};
-        FormatDuration(ss, duration);
+        FormatDuration(ss, Elapsed());
         return ss.str();
     }
 
     template <typename UNITS = std::chrono::milliseconds>
     static void FormatDurationFixedUnits(std::stringstream& ss, const std::chrono::nanoseconds& duration) {
         ss << std::setw(8) << std::right << std::chrono::duration_cast<UNITS>(duration).count();
-        if (std::is_same<UNITS, std::chrono::seconds>())
+        if constexpr (std::is_same<UNITS, std::chrono::seconds>())
             ss  << " s";
-        else if (std::is_same<UNITS, std::chrono::milliseconds>())
+        else if constexpr (std::is_same<UNITS, std::chrono::milliseconds>())
             ss << " ms";
-        else if (std::is_same<UNITS, std::chrono::microseconds>())
+        else if constexpr (std::is_same<UNITS, std::chrono::microseconds>())
             ss << " µs";
-        else if (std::is_same<UNITS, std::chrono::nanoseconds>())
+        else if constexpr (std::is_same<UNITS, std::chrono::nanoseconds>())
             ss << " ns";
     }
 
@@ -84,33 +109,27 @@ public:
             ss << std::chrono::duration_cast<std::chrono::seconds>(duration).count() << " s";
 
         } else if (duration >= std::chrono::seconds(10)) {
-            auto ms{std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()};
-            ss << (ms / 100) / 10.0 << " s";    // round to 10ths of seconds
+            const auto ms{std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()};
+            ss << static_cast<double>(ms / 100) / 10.0 << " s";    // round to 10ths of seconds
 
         } else if (duration >= std::chrono::milliseconds(100)) {
             ss << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << " ms";
 
         } else if (duration >= std::chrono::milliseconds(10)) {
-            auto ms{std::chrono::duration_cast<std::chrono::microseconds>(duration).count()};
-            ss << (ms / 100) / 10.0 << " ms";    // round to 10ths of milliseconds
+            const auto ms{std::chrono::duration_cast<std::chrono::microseconds>(duration).count()};
+            ss << static_cast<double>(ms / 100) / 10.0 << " ms";    // round to 10ths of milliseconds
 
         } else if (duration >= std::chrono::microseconds(100)) {
             ss << std::chrono::duration_cast<std::chrono::microseconds>(duration).count() << " µs";
 
         } else if (duration >= std::chrono::microseconds(10)) {
-            auto ns{std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()};
-            ss << (ns / 100) / 10.0 << " µs";    // round to 10ths of microseconds
+            const auto ns{std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()};
+            ss << static_cast<double>(ns / 100) / 10.0 << " µs";    // round to 10ths of microseconds
 
         } else {
             ss << std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count() << " ns";
         }
     }
-
-    std::chrono::high_resolution_clock::time_point m_start;
-    std::string                                    m_name;
-    std::function<std::string ()>                  m_output_text_fn;
-    bool                                           m_enable_output;
-    std::chrono::microseconds                      m_threshold;
 };
 
 ScopedTimer::ScopedTimer() :
@@ -119,7 +138,7 @@ ScopedTimer::ScopedTimer() :
 
 ScopedTimer::ScopedTimer(std::string timed_name, bool enable_output,
                          std::chrono::microseconds threshold) :
-    m_impl(new Impl(std::move(timed_name), enable_output, threshold))
+    m_impl(std::make_unique<Impl>(std::move(timed_name), enable_output, threshold))
 {}
 
 ScopedTimer::ScopedTimer(std::string timed_name, std::chrono::microseconds threshold) :
@@ -128,7 +147,7 @@ ScopedTimer::ScopedTimer(std::string timed_name, std::chrono::microseconds thres
 
 ScopedTimer::ScopedTimer(std::function<std::string ()> output_text_fn,
                          std::chrono::microseconds threshold) :
-    m_impl(new Impl(output_text_fn, true, threshold))
+    m_impl(std::make_unique<Impl>(std::move(output_text_fn), true, threshold))
 {}
 
 
@@ -136,31 +155,31 @@ ScopedTimer::ScopedTimer(std::function<std::string ()> output_text_fn,
 //!     ~ScopedTimer is required because Impl is defined here.
 ScopedTimer::~ScopedTimer() = default;
 
-void ScopedTimer::restart()
+void ScopedTimer::restart() noexcept
 { m_impl->Restart(); }
 
-double ScopedTimer::duration() const
+double ScopedTimer::duration() const noexcept
 { return m_impl->Duration(); }
 
 std::string ScopedTimer::DurationString() const
 { return m_impl->DurationString(); }
 
+std::chrono::nanoseconds ScopedTimer::Elapsed() const noexcept
+{ return m_impl->Elapsed(); }
 
 
 class SectionedScopedTimer::Impl : public ScopedTimer::Impl {
     /** Sections store a time and a duration for each section of the elapsed time report.*/
     struct Sections {
-        Sections(const std::chrono::high_resolution_clock::time_point& now,
-                 const std::chrono::nanoseconds& time_from_start) :
-            m_section_start(now)
-        {
-            // Create a dummy "" section so that m_curr is always a valid iterator.
-            auto curr = m_table.emplace("", time_from_start);
-            m_curr = curr.first;
-        }
+        Sections(std::chrono::high_resolution_clock::time_point now,
+                 std::chrono::nanoseconds time_from_start) :
+            m_table{{"", time_from_start}}, // Create a dummy "" section so that m_curr is always a valid iterator.
+            m_section_start(now),
+            m_curr{m_table.begin()}
+        {}
 
         /** Add time to the current section and then setup the new section. */
-        void Accumulate(const std::chrono::high_resolution_clock::time_point& now,
+        void Accumulate(std::chrono::high_resolution_clock::time_point now,
                         const std::string& section_name)
         {
             if (m_curr->first == section_name)
@@ -171,20 +190,20 @@ class SectionedScopedTimer::Impl : public ScopedTimer::Impl {
             m_section_start = now;
 
             // Create a new section if needed and update m_curr.
-            auto maybe_new = m_table.emplace(
+            bool is_new_section = false;
+            std::tie(m_curr, is_new_section) = m_table.try_emplace(
                 section_name, std::chrono::high_resolution_clock::duration::zero());
-            m_curr = maybe_new.first;
 
-            // Insert succeed, so grab the new section name.
-            if (maybe_new.second)
+            // Insert succeed, so store the new section name at end of list
+            if (is_new_section)
                 m_section_names.push_back(section_name);
         }
 
         //Table of section durations
-        typedef std::unordered_map<std::string, std::chrono::nanoseconds> SectionTable;
+        using SectionTable = boost::unordered_map<std::string, std::chrono::nanoseconds> ;
         SectionTable m_table;
 
-        // Currently running section start time and iterator
+        // Currently running section start time
         std::chrono::high_resolution_clock::time_point m_section_start;
 
         // m_curr always points to the section currently accumulating
@@ -195,9 +214,14 @@ class SectionedScopedTimer::Impl : public ScopedTimer::Impl {
         std::vector<std::string> m_section_names;
     };
 
+    /** CreateSections allow m_sections to only be initialized if it is used.*/
+    void CreateSections(std::chrono::high_resolution_clock::time_point now)
+    { m_sections = std::make_unique<Sections>(now, now - m_start); }
+
 public:
     Impl(std::string timed_name, std::chrono::microseconds threshold,
-         bool enable_output, bool unify_section_duration_units) :
+         bool enable_output, bool unify_section_duration_units)
+        noexcept(noexcept(ScopedTimer::Impl(std::declval<std::string>(), true, std::declval<std::chrono::microseconds>()))) :
         ScopedTimer::Impl(std::move(timed_name), enable_output, threshold),
         m_unify_units(unify_section_duration_units)
     {}
@@ -221,11 +245,11 @@ public:
         //Print the section times followed by the total time elapsed.
 
         // Find the longest name to right align the times and longest time to align the units
-        size_t longest_section_name(0);
+        std::size_t longest_section_name(0);
         std::chrono::nanoseconds longest_section_duration(0);
-        for (const auto& section : m_sections->m_table) {
-            longest_section_name = std::max(longest_section_name, section.first.size());
-            longest_section_duration = std::max(longest_section_duration, section.second);
+        for (const auto& [sec_name, sec_dur] : m_sections->m_table) {
+            longest_section_name = std::max(longest_section_name, sec_name.size());
+            longest_section_duration = std::max(longest_section_duration, sec_dur);
         }
 
         // Output section names and times in order they were created
@@ -284,16 +308,20 @@ public:
         m_sections->Accumulate(now, section_name);
     }
 
-    std::chrono::nanoseconds Elapsed() const
+    [[nodiscard]]std::chrono::nanoseconds Elapsed() const noexcept
     { return std::chrono::high_resolution_clock::now() - m_start; }
 
-private:
-    /** CreateSections allow m_sections to only be initialized if it is used.*/
-    Sections* CreateSections(const std::chrono::high_resolution_clock::time_point& now) {
-        m_sections.reset(new Sections(now, now - m_start));
-        return m_sections.get();
+    [[nodiscard]] const Sections::SectionTable* GetSectionTable() const noexcept
+    { return m_sections ? &m_sections->m_table : nullptr; }
+
+    [[nodiscard]]const std::vector<std::pair<std::string_view, std::chrono::nanoseconds>> SectionsElapsed() const {
+        if (!m_sections)
+            return {};
+        const auto& t = m_sections->m_table;
+        return {t.begin(), t.end()};
     }
 
+private:
     // Pointer to table of sections.
     // Sections are only allocated when the first section is created, to minimize overhead of a
     // section-less timer.
@@ -304,14 +332,17 @@ private:
 
 SectionedScopedTimer::SectionedScopedTimer(std::string timed_name,
                                            std::chrono::microseconds threshold) :
-    m_impl(new Impl(std::move(timed_name), threshold, true, true))
+    m_impl(std::make_unique<Impl>(std::move(timed_name), threshold, true, true))
 {}
 
 // ~SectionedScopedTimer is required because Impl is defined here.
 SectionedScopedTimer::~SectionedScopedTimer() = default;
 
-std::chrono::nanoseconds SectionedScopedTimer::Elapsed() const
+std::chrono::nanoseconds SectionedScopedTimer::Elapsed() const noexcept
 { return m_impl->Elapsed(); }
+
+std::vector<std::pair<std::string_view, std::chrono::nanoseconds>> SectionedScopedTimer::SectionsElapsed() const noexcept
+{ return m_impl->SectionsElapsed(); }
 
 void SectionedScopedTimer::EnterSection(const std::string& section_name)
 { m_impl->EnterSection(section_name); }

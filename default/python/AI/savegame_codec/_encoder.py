@@ -70,7 +70,6 @@ def encode(o: Any) -> str:
     except KeyError:
         if issubclass(o_type, IntEnum):
             return _encode_with_prefix(ENUM_PREFIX, f"{o.__class__.__name__}.{o.name}")
-
         else:
             return _encode_object(o)
     else:
@@ -109,12 +108,12 @@ def _encode_bool(o):
 def _encode_object(obj):
     """Get a string representation of state of an object which is not handled by a specialized encoder."""
     try:
-        class_name = "%s.%s" % (obj.__class__.__module__, obj.__class__.__name__)
+        class_name = f"{obj.__class__.__module__}.{obj.__class__.__name__}"
         if class_name not in trusted_classes:
             raise CanNotSaveGameException("Class %s is not trusted" % class_name)
     except AttributeError:
         # obj does not have a class or class has no module
-        raise CanNotSaveGameException("Encountered unsupported object %s (%s)" % (obj, type(obj)))
+        raise CanNotSaveGameException(f"Encountered unsupported object {obj} ({type(obj)})")
 
     # if possible, use getstate method to query the state, otherwise use the object's __dict__
     try:
@@ -147,7 +146,7 @@ def _encode_set(o):
 
 def _encode_dict(o):
     """Get a string representation of a dict with its encoded content."""
-    return "{%s}" % (", ".join(["%s: %s" % (encode(k), encode(v)) for k, v in o.items()]))
+    return "{%s}" % (", ".join([f"{encode(k)}: {encode(v)}" for k, v in o.items()]))
 
 
 _encoder_table = {

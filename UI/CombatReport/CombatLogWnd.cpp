@@ -100,18 +100,15 @@ namespace {
     {
         decltype(SegregateForces(owners, objects, categories, order)) forces;
 
-        for (const auto& object: Objects().find(objects)) {
-            if (!object)
-                continue;
-
-            if (owners.count(object->Owner()) == 0)
+        for (const auto& object : ClientApp::GetApp()->GetContext().ContextObjects().find(objects)) {
+            if (!object || !owners.contains(object->Owner()))
                 continue;
 
             auto& owner_forces = forces[object->Owner()];
             if (owner_forces.empty())
                 owner_forces.resize(categories.size());
 
-            for (size_t i = 0; i < categories.size(); ++i) {
+            for (std::size_t i = 0; i < categories.size(); ++i) {
                 const auto& category = categories[i];
                 if (category(object)) {
                     auto& owner_forces_category = owner_forces[i];
@@ -139,7 +136,7 @@ namespace {
         std::string retval;
         static constexpr std::size_t retval_sz = 24 + 1 + VarText::EMPIRE_ID_TAG.length()*2 + 1 + 8 + 1 + 30 + 3 + 1 + 10 + 20; // semi-guesstimate
         retval.reserve(retval_sz);
-        const ScriptingContext context;
+        const ScriptingContext& context = IApp::GetApp()->GetContext();
         if (const auto empire = context.GetEmpire(empire_id))
             return retval.append(GG::RgbaTag(empire->Color())).append("<").append(VarText::EMPIRE_ID_TAG).append(" ")
                          .append(std::to_string(empire->EmpireID())).append(">").append(empire->Name()).append("</")
@@ -161,9 +158,9 @@ namespace {
         bool operator()(const std::shared_ptr<UniverseObject>& lhs,
                         const std::shared_ptr<UniverseObject>& rhs)
         {
-            const Universe& u = GetUniverse();
-            const auto& lhs_public_name = lhs->PublicName(viewing_empire_id, u);
-            const auto& rhs_public_name = rhs->PublicName(viewing_empire_id, u);
+            const ScriptingContext& context = IApp::GetApp()->GetContext();
+            const auto& lhs_public_name = lhs->PublicName(viewing_empire_id, context.ContextUniverse());
+            const auto& rhs_public_name = rhs->PublicName(viewing_empire_id, context.ContextUniverse());
             if (lhs_public_name != rhs_public_name) {
 #if defined(FREEORION_MACOSX)
                 // Collate on OSX seemingly ignores greek characters, resulting in sort order: X α
@@ -185,12 +182,12 @@ namespace {
     std::string ForcesToText(
         int viewing_empire_id,
         const std::vector<std::vector<std::shared_ptr<UniverseObject>>>& forces,
-        const std::string& delimiter = ", ",
-        const std::string& category_delimiter = "\n-\n")
+        const std::string_view delimiter = ", ",
+        const std::string_view category_delimiter = "\n-\n")
     {
-        std::stringstream ss;
-        const Universe& universe = GetUniverse();
+        const ScriptingContext& context = IApp::GetApp()->GetContext();
 
+        std::stringstream ss;
         bool first_category = true;
         for (const auto& category : forces) {
             if (category.empty())
@@ -206,7 +203,7 @@ namespace {
                     first_in_category = false;
                 else
                     ss << delimiter;
-                ss << WrapWithTagAndId(object->PublicName(viewing_empire_id, universe),
+                ss << WrapWithTagAndId(object->PublicName(viewing_empire_id, context.ContextUniverse()),
                                        LinkTag(object->ObjectType()), object->ID());
             }
         }
@@ -249,7 +246,7 @@ namespace {
         log(log_),
         viewing_empire_id(viewing_empire_id_),
         event(event_),
-        title(log.DecorateLinkText(event->CombatLogDescription(viewing_empire_id, ScriptingContext{})))
+        title(log.DecorateLinkText(event->CombatLogDescription(viewing_empire_id, IApp::GetApp()->GetContext())))
     {}
 
     void CombatLogAccordionPanel::CompleteConstruction() {
@@ -417,7 +414,7 @@ namespace {
             GG::Wnd & parent, GG::X x, GG::Y y, const std::string& str,
             const std::shared_ptr<GG::Font>& font, GG::Clr color = GG::CLR_BLACK) :
             LinkText(x, y, UserString("ELLIPSIS"), font, color),
-            m_text(new std::string(str))
+            m_text(std::make_unique<std::string>(str))
         {
             // Register for signals that might bring the text into view
             if (const auto* log = FindParentOfType<CombatLogWnd>(&parent)) {
@@ -469,7 +466,7 @@ namespace {
         void HandleScrolledAndStopped(int start_pos, int end_post, int min_pos, int max_pos)
         { HandleMaybeVisible(); }
 
-        void SizeMove(const GG::Pt& ul, const GG::Pt& lr)  override {
+        void SizeMove(GG::Pt ul, GG::Pt lr)  override {
             LinkText::SizeMove(ul, lr);
             if (! m_signals.empty())
                 HandleMaybeVisible();
@@ -487,10 +484,10 @@ std::shared_ptr<LinkText> CombatLogWnd::Impl::DecorateLinkText(std::string text)
 
     links->SetTextFormat(m_text_format_flags);
 
-    links->SetDecorator(VarText::SHIP_ID_TAG, new ColorByOwner());
-    links->SetDecorator(VarText::PLANET_ID_TAG, new ColorByOwner());
-    links->SetDecorator(VarText::SYSTEM_ID_TAG, new ColorByOwner());
-    links->SetDecorator(VarText::EMPIRE_ID_TAG, new ColorByOwner());
+    links->SetDecorator(VarText::SHIP_ID_TAG, TextLinker::DecoratorType::ColorByOwner);
+    links->SetDecorator(VarText::PLANET_ID_TAG, TextLinker::DecoratorType::ColorByOwner);
+    links->SetDecorator(VarText::SYSTEM_ID_TAG, TextLinker::DecoratorType::ColorByOwner);
+    links->SetDecorator(VarText::EMPIRE_ID_TAG, TextLinker::DecoratorType::ColorByOwner);
 
     links->LinkClickedSignal.connect(m_wnd.LinkClickedSignal);
     links->LinkDoubleClickedSignal.connect(m_wnd.LinkDoubleClickedSignal);
@@ -538,7 +535,7 @@ std::vector<std::shared_ptr<GG::Wnd>> CombatLogWnd::Impl::MakeCombatLogPanel(
         return new_logs;
     }
 
-    std::string title = event->CombatLogDescription(viewing_empire_id, ScriptingContext{});
+    std::string title = event->CombatLogDescription(viewing_empire_id, IApp::GetApp()->GetContext());
     if (!(event->FlattenSubEvents() && title.empty()))
         new_logs.push_back(DecorateLinkText(title));
 
@@ -572,13 +569,15 @@ void CombatLogWnd::Impl::SetLog(int log_id) {
                                                      );
     m_wnd.SetLayout(layout);
 
+    const ScriptingContext& context = IApp::GetApp()->GetContext();
+
     int client_empire_id = GGHumanClientApp::GetApp()->EmpireID();
-    const Universe& universe = GetUniverse();
-    const ObjectMap& objects = universe.Objects();
+    const Universe& universe = context.ContextUniverse();
+    const ObjectMap& objects = context.ContextObjects();
     //const EmpireManager& empires = Empires();
 
     // Write Header text
-    auto system = objects.get<System>(log->system_id);
+    const auto* system = objects.getRaw<System>(log->system_id);
     const std::string& sys_name = (system ? system->PublicName(client_empire_id, universe) : UserString("ERROR"));
     DebugLogger(combat_log) << "Showing combat log #" << log_id << " at " << sys_name << " (" << log->system_id
                             << ") with " << log->combat_events.size() << " events";
@@ -588,27 +587,38 @@ void CombatLogWnd::Impl::SetLog(int log_id) {
                                 % log->turn) + "\n"));
 
 
+    const auto invisible_to_client_empire_planet =
+        [client_empire_id, &universe](const std::shared_ptr<UniverseObject>& object) {
+        return object &&
+            object->ObjectType() == UniverseObjectType::OBJ_PLANET &&
+            universe.GetObjectVisibilityByEmpire(object->ID(), client_empire_id) < Visibility::VIS_PARTIAL_VISIBILITY;
+        };
+
     AddRow(DecorateLinkText(UserString("COMBAT_INITIAL_FORCES")));
-    const auto initial_forces =
-        SegregateForces(log->empire_ids, log->object_ids, {IsShip, HasPopulation},
-                        OrderByNameAndId(client_empire_id));
-    for (const auto& empire_forces : initial_forces)
-        AddRow(GG::Wnd::Create<EmpireForcesAccordionPanel>(
-            GG::X0, *this, client_empire_id, empire_forces.first, empire_forces.second));
+    {
+        auto initial_forces =
+            SegregateForces(log->empire_ids, log->object_ids,
+                            {IsShip, HasPopulation, invisible_to_client_empire_planet},
+                            OrderByNameAndId(client_empire_id));
+        for (auto& [forces_empire_id, empire_forces] : initial_forces)
+            AddRow(GG::Wnd::Create<EmpireForcesAccordionPanel>(
+                GG::X0, *this, client_empire_id, forces_empire_id, std::move(empire_forces)));
+    }
 
     AddRow(DecorateLinkText("\n" + UserString("COMBAT_SUMMARY_DESTROYED")));
-    const auto destroyed_forces =
-        SegregateForces(log->empire_ids, log->destroyed_object_ids, {IsShip, HasPopulation},
-                        OrderByNameAndId(client_empire_id));
-    for (const auto& empire_forces : destroyed_forces)
-        AddRow(GG::Wnd::Create<EmpireForcesAccordionPanel>(
-            GG::X0, *this, client_empire_id, empire_forces.first, empire_forces.second));
+    {
+        auto destroyed_forces =
+            SegregateForces(log->empire_ids, log->destroyed_object_ids, {IsShip, HasPopulation},
+                            OrderByNameAndId(client_empire_id));
+        for (auto& [forces_empire_id, empire_forces] : destroyed_forces)
+            AddRow(GG::Wnd::Create<EmpireForcesAccordionPanel>(
+                GG::X0, *this, client_empire_id, forces_empire_id, std::move(empire_forces)));
+    }
 
     // Write Logs
-    const ScriptingContext context;
     for (CombatEventPtr event : log->combat_events) {
         DebugLogger(combat_log) << "event debug info: " << event->DebugString(context);
-        for (auto&& wnd : MakeCombatLogPanel(m_font->SpaceWidth()*10, client_empire_id, event))
+        for (auto& wnd : MakeCombatLogPanel(m_font->SpaceWidth()*10, client_empire_id, event))
             AddRow(std::move(wnd));
     }
 
@@ -623,10 +633,8 @@ void CombatLogWnd::Impl::SetLog(int log_id) {
 // Forward request to private implementation
 CombatLogWnd::CombatLogWnd(GG::X w, GG::Y h) :
     GG::Wnd(GG::X0, GG::Y0, w, h, GG::NO_WND_FLAGS),
-    m_impl(new Impl(*this))
-{
-    SetName("CombatLogWnd");
-}
+    m_impl(std::make_unique<Impl>(*this))
+{ SetName("CombatLogWnd"); }
 
 CombatLogWnd::~CombatLogWnd() = default;
 
@@ -636,10 +644,10 @@ void CombatLogWnd::SetFont(std::shared_ptr<GG::Font> font)
 void CombatLogWnd::SetLog(int log_id)
 { m_impl->SetLog(log_id); }
 
-GG::Pt CombatLogWnd::ClientUpperLeft() const
+GG::Pt CombatLogWnd::ClientUpperLeft() const noexcept
 { return UpperLeft() + GG::Pt(GG::X(MARGIN), GG::Y(MARGIN)); }
 
-GG::Pt CombatLogWnd::ClientLowerRight() const
+GG::Pt CombatLogWnd::ClientLowerRight() const noexcept 
 { return LowerRight() - GG::Pt(GG::X(MARGIN), GG::Y(MARGIN)); }
 
 GG::Pt CombatLogWnd::MinUsableSize() const
@@ -659,7 +667,7 @@ void CombatLogWnd::PreRender() {
     This fix forces the combat accordion window to correctly resize itself.
 
     TODO: Fix intial size of CombatReport from (30,15) to its actual first displayed size.*/
-    GG::Pt size = Size();
+    const auto size = Size();
     Resize(size + GG::Pt(2 * m_impl->m_font->SpaceWidth(), GG::Y0));
     GG::GUI::PreRenderWindow(this);
     Resize(size);
